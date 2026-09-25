@@ -2,10 +2,16 @@
 # （CRLF 的 start.sh 在 Linux/macOS 上会报 bad interpreter）
 * text=auto eol=lf
 
-# Windows 专用脚本保留 CRLF
-*.cmd text eol=crlf
-*.bat text eol=crlf
-*.ps1 text eol=crlf
+# Windows 批处理：必须保留 CRLF，而且要用 -text（不做归一化）。
+#   eol=crlf 只在 git checkout 时生效；GitHub 的「Download ZIP」和安装器自己打的包
+#   都是直接导出 blob —— blob 若是 LF，用户拿到的 .cmd 会被 cmd.exe 解析坏掉
+#   （实测：安装包内 CRLF=0，双击/自启报 'xist' 不是内部或外部命令）。
+#   配套措施：start.cmd 内部只写「单行 if + goto」，不依赖换行符。
+*.cmd -text
+*.bat -text
+
+# PowerShell 对换行不敏感，仍按 LF 归一化即可
+*.ps1 text eol=lf
 
 # 二进制/生成物不参与换行符转换
 *.png binary
