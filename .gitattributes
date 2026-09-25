@@ -9,6 +9,7 @@
 #   配套措施：start.cmd 内部只写「单行 if + goto」，不依赖换行符。
 *.cmd -text
 *.bat -text
+*.vbs -text
 
 # PowerShell 对换行不敏感，仍按 LF 归一化即可
 *.ps1 text eol=lf
