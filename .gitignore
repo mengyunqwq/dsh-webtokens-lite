@@ -1,0 +1,12 @@
+# 运行时产物（里面含**上游第三方代码**，绝不入库：本仓库只做「按引用拉取 + 校验」）
+vendor/
+chrome/
+
+# 本机密钥与配置
+config.json
+*.token
+
+# 常规
+node_modules/
+*.log
+.DS_Store

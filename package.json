@@ -1,0 +1,19 @@
+{
+  "name": "dsh-webtokens-lite",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "把「已登录的 DeepSeek 网页」接入你自己的 LLM 中转站：免 API Key 的本机桥接。本仓库不包含上游第三方代码，按固定 tag 拉取并逐文件 SHA-256 校验。",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "setup": "node setup.mjs",
+    "start": "node start.mjs",
+    "doctor": "node setup.mjs --doctor"
+  },
+  "dependencies": {
+    "ajv": "8.20.0"
+  }
+}

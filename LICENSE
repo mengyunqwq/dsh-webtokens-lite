@@ -1,0 +1,29 @@
+MIT License
+
+Copyright (c) 2026 dsh-webtokens-lite contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+注意（重要）：
+本仓库**不包含**任何第三方桥接插件（xinyuquan985-coder/DSH-webtokens）的源代码。
+该上游项目未声明任何开源许可证，因此其代码不在本许可证覆盖范围内，本仓库也不对其再分发。
+`setup.mjs` 会在使用者本机按固定 tag 下载上游代码、并用上游自带的 SOURCE.json
+逐文件校验 SHA-256 后，仅在本机使用。上游代码的著作权归属其原作者。
