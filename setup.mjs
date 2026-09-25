@@ -62,6 +62,11 @@ async function doctor() {
   const check = existsSync(join(PLUGIN_DIR, 'broker.js')) ? verifyVendor() : { ok: false, reason: 'vendor 未拉取' };
   if (check.ok) log(`✓ 上游副本可信：${check.total} 个文件 SHA-256 一致（${UPSTREAM.repo}@${UPSTREAM.tag}，基线 ${String(check.commit).slice(0, 12)}）`);
   else log(`✗ 上游副本不可信：${check.reason} → 运行  npm run setup`);
+  // 反向检查：真正会被加载的目录（extension/、plugins/）里不该有清单之外的文件
+  if (check.extraFiles?.length) {
+    log(`⚠ 上游副本里有 ${check.extraFiles.length} 个清单之外的代码文件（不会被扩展加载，但建议核对）：`);
+    for (const f of check.extraFiles.slice(0, 8)) log('    ' + f);
+  }
 
   const config = readConfig();
   if (!config) log('✗ 未初始化（无 config.json）→ 运行  npm run setup');

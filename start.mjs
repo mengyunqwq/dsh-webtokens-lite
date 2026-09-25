@@ -60,12 +60,22 @@ if (!config.relay?.deviceId || !config.relay?.deviceToken) {
   log('⚠ 还没配对中转站：本机桥接已在跑（DSH 等本地程序可直接用 3081），但中转站的任务投递需要先配对。');
   log('  去控制台「＋ 添加我的电脑」拿配对码，然后：npm run setup -- --pair <配对码> --server <地址>');
 } else {
-  await runAgent({
-    server: config.relay.server,
-    token: config.relay.deviceToken,
-    deviceName: config.relay.name,
-    localToken: config.token,
-    localPort: port,
-    timeoutMs,
-  });
+  try {
+    await runAgent({
+      server: config.relay.server,
+      token: config.relay.deviceToken,
+      deviceName: config.relay.name,
+      localToken: config.token,
+      localPort: port,
+      timeoutMs,
+    });
+  } catch (error) {
+    // 致命错误（设备在控制台被删除/停用、令牌失效等）：给一句人话再干净退出。
+    // 原来直接冒泡＝未处理拒绝，用户只看到堆栈，也不知道该做什么。
+    log('连接器已停止：' + (error?.message || error));
+    log('  怎么修：到中转站控制台确认这台设备还在（没被解除配对/停用），');
+    log('          然后在控制台「＋ 添加我的电脑」重新拿配对码：npm run setup -- --pair <配对码> --server <地址>');
+    try { await broker.close(); } catch { /* 忽略 */ }
+    process.exit(1);
+  }
 }
