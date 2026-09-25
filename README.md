@@ -29,6 +29,29 @@
 | 前提 | 这台电脑要开着、浏览器要开着、扩展要加载、DeepSeek 要保持登录 |
 | 超时 | 本机等网页 240s；中转站侧投递预算需设为 300s（见 [docs/relay-side.md](docs/relay-side.md)） |
 
+## 一键安装（推荐）
+
+如果你的中转站托管了安装脚本（见 [docs/relay-side.md](docs/relay-side.md) 的「托管一键安装器」），
+在 Windows PowerShell 里**一行命令**即可装完全部（含便携 Node，不需要管理员、不需要预装任何东西）：
+
+```powershell
+irm https://<你的中转站>/agent/runner/webbridge.ps1 | iex
+```
+
+无人值守（把配对码当参数传，适合脚本或 AI 代跑）：
+
+```powershell
+& ([scriptblock]::Create((irm https://<你的中转站>/agent/runner/webbridge.ps1))) -Pair ABCD-EFGH
+```
+
+安装器会自动：装便携 Node → 下客户端 → **按固定 tag 拉上游并逐文件 SHA-256 校验** → 生成配对密钥
+→ 铺扩展目录 → 配对中转站 → 写开机自启 → 打开浏览器并把扩展目录放进剪贴板。
+
+**装完只剩两件必须人工做的事**（脚本会大字标出）：① 浏览器开发者模式加载解压扩展；② 登录 DeepSeek。
+
+> **给 AI 用的安装协议**：[docs/agent-install.md](docs/agent-install.md)（步骤、参数、输出约定、
+> 人工交接、验证、故障处理、卸载；也可直接 `irm <你的中转站>/agent/runner/webbridge.md` 取到）。
+
 ## 环境要求
 
 - **Node.js 22 或更高**

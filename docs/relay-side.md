@@ -105,7 +105,40 @@ dispatch(deviceId, { name: 'web_prompt', args: { body } }, { timeoutMs: 300_000 
 - 连接器只处理 `web_prompt`；投递别的工具它会明确报错（不会静默吞掉任务）。
 - 建议给这个模型单独限速：消耗的是用户自己的网页额度，滥用会把它刷爆。
 
-## 6. 隐私（请如实告知你的用户）
+## 6. 托管一键安装器（可选，但强烈建议）
+
+把客户端分发给使用者最省事的方式，是让**中转站自己**托管安装脚本与安装包，使用者只需一行命令
+（形态与你现有的连接器安装完全一致）。
+
+放置两个文件到 `public/agent/`：
+
+| 文件 | 说明 |
+|---|---|
+| `webbridge.ps1` | 一键安装器（磁盘上带 UTF-8 BOM 供 `-File` 执行；对外提供时**必须去掉 BOM**，否则 `irm \| iex` 报错） |
+| `webbridge.zip` | 安装包 = 客户端源码 **+ `node_modules`（ajv 及其依赖，约 1.3MB）**，这样使用者**不需要 npm install** |
+
+再挂三个路由：
+
+```js
+app.get('/agent/runner/webbridge.ps1', (req, res) => sendRunnerScript(req, res, 'webbridge.ps1'));
+app.get('/agent/runner/webbridge.md', ...);        // 给 AI 读的安装协议（去 BOM 后按 text/markdown 返回）
+app.get('/agent/runner/webbridge-package', ...);   // 见下面的注意事项
+```
+
+`webbridge.ps1` 里的 `__SERVER__` 会被替换成请求来源的站点地址（与 `install.ps1` 同一机制），
+所以每个中转站托管自己的副本即可，使用者不需要手填地址。
+
+### ⚠️ 两个实测踩过的坑
+
+1. **安装包路由的路径不要以 `.zip` 结尾**。本站在攻击特征里有
+   `\.(sql|bak|old|zip|tar|tgz|rar|7z)$`，任何 `.zip` 下载请求都会被判成「扫描敏感文件」并 **403**
+   （实测被自家 WAF 拦下，还记了一条 critical 安全事件）。所以路由用 `webbridge-package`，
+   下载文件名交给 `Content-Disposition` 决定，使用者拿到的仍然是 `dsh-webtokens-lite.zip`。
+2. **`irm | iex` 的脚本不要 `exit`**。在交互式 `iex` 场景下 `exit` 会直接关掉使用者的 PowerShell 窗口
+   （AI 代跑时会掐断它自己的 shell）。失败用 `throw`、`-Doctor` 自检用 `return`；
+   用 `powershell -File` 执行时未捕获的 `throw` 同样让进程以退出码 1 结束。
+
+## 7. 隐私（请如实告知你的用户）
 
 - 内容会出现在**调用者自己的** DeepSeek 网页会话里（这是网页版本质）。
 - 内容仍会**经过中转站服务进程**（要转发/路由/记账）。若服务端不落库正文，
