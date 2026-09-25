@@ -1,4 +1,4 @@
-# 给 AI 的安装协议（agent-install）
+﻿# 给 AI 的安装协议（agent-install）
 
 > 这份文档的对象是**另一台电脑上的 AI agent**。照它执行即可把「本机网页桥接」装齐；
 > 只有两步需要转交给人类，文档里用 `[HUMAN]` 标出。
@@ -50,7 +50,7 @@
 2. **Node**：先找 `<Root>\node\node.exe`，再找系统 PATH 里 ≥22 的 node；
    都没有就下载**便携版**（官方 nodejs.org，失败自动回退 npmmirror 镜像）解压到 `<Root>\node`
    —— **不写系统目录、不需要管理员**；
-3. **客户端**：从中转站下载 `webbridge.zip`（已内置依赖，**不需要 npm install**）解压到 `<Root>`；
+3. **客户端**：从中转站下载 `webbridge-package`（已内置依赖，**不需要 npm install**）解压到 `<Root>`；
 4. **拉取上游并校验**：`node setup.mjs` 会按固定 tag 拉取上游插件，
    并用上游自带的 `SOURCE.json` **逐文件校验 43 个 SHA-256**（不通过就中止）；
 5. 生成本机配对密钥、铺出扩展目录 `<Root>\chrome`；
