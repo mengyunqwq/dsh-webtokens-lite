@@ -11,7 +11,7 @@
 
 (() => {
   const D = globalThis.DSHOwnDom;
-  const VERSION = '1.0.0';
+  const VERSION = '1.0.1';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let active = null;
 
@@ -46,6 +46,9 @@
     active = { id: job.id, cancelled: false, lease: job.lease };
     const sentKey = 'dsh-own-sent-' + job.id;
     const started = Date.now();
+    // 第一件事就留个痕迹：否则"任务被派发了但页面侧什么都没做"这种情况，
+    // 外部看起来和"跑了但没回报"完全一样，无法定位（实测踩到：120 秒静默超时）。
+    report('progress', { phase: '内容脚本已接手，正在准备提交' }, job.id);
     try {
       if (!D.findComposer(document)) throw new Error('找不到网页输入框：请确认已登录 chat.deepseek.com 且页面加载完成');
       if (D.findStop(document)) throw new Error('网页正在生成别的回答，请等它结束再试');
@@ -105,8 +108,10 @@
     }
   }
 
-  const report = (type, payload) => {
-    try { chrome.runtime.sendMessage({ type, taskId: active?.id, ...payload }).catch?.(() => {}); } catch { /* 后台已休眠，下一轮 poll 会同步状态 */ }
+  // taskId 显式传入：出错时若依赖 active?.id，而 active 已经被清掉或还是上一轮的对象，
+  // 上报就会带错 id，被后台判为"过期"直接丢掉——外部表现为任务静默消失（实测踩到）。
+  const report = (type, payload, taskId = active?.id) => {
+    try { chrome.runtime.sendMessage({ type, taskId, ...payload }).catch?.(() => {}); } catch { /* 后台已休眠，下一轮 poll 会同步状态 */ }
   };
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -134,7 +139,7 @@
       const job = message.job || {};
       const stuck = sessionStorage.getItem('dsh-own-sent-' + job.id);
       if (stuck === 'sent') { sessionStorage.removeItem('dsh-own-sent-' + job.id); sendResponse({ error: '页面在上一轮提交后重载过，为避免重复提问已停止本轮（不会重发）' }); return; }
-      run(job).catch((error) => report('error', { error: error?.message || String(error) }));
+      run(job).catch((error) => report('error', { error: error?.message || String(error) }, job.id));
       sendResponse({ ok: true });
       return;
     }

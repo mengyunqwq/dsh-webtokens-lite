@@ -5,11 +5,15 @@ async function load() {
   const { state, active, lastError } = await chrome.storage.local.get(['state', 'active', 'lastError']);
   $('state').textContent = state || '（还没有状态：本机桥接可能没启动）';
 
-  let token = '';
-  try { token = (await (await fetch(chrome.runtime.getURL('local-config.json'))).json()).token || ''; } catch { /* ignore */ }
+  let token = '', base = 'http://127.0.0.1:3081';
+  try {
+    const cfg = await (await fetch(chrome.runtime.getURL('local-config.json'))).json();
+    token = cfg.token || '';
+    if (cfg.base) base = cfg.base;
+  } catch { /* ignore */ }
   $('broker').textContent = token ? '密钥已就绪' : '缺少 local-config.json（重跑 npm run setup）';
   try {
-    const res = await fetch('http://127.0.0.1:3081/status', { signal: AbortSignal.timeout(2500) });
+    const res = await fetch(base + '/status', { signal: AbortSignal.timeout(2500) });
     const s = await res.json();
     $('broker').textContent = (s.connected ? '已连接' : '未连接') + '（排队 ' + (s.queued ?? 0) + '）';
   } catch { $('broker').textContent = '连不上 127.0.0.1:3081'; }
