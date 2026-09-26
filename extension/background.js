@@ -8,7 +8,7 @@
 //   · 取消（broker 回 cancelled 或用户点停止）会传给页面驱动，让它点网页的停止按钮。
 
 const DEFAULTS = { base: 'http://127.0.0.1:3081' };
-const VERSION = '1.0.4';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
+const VERSION = '1.0.5';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
 let pumping = false;
 
 const configPromise = (async () => {
@@ -129,6 +129,8 @@ async function pump() {
   if (pumping) return;
   pumping = true;
   try {
+    // 先把上一轮没送出去的结果补上（哪怕这次 poll 还没开始）
+    await flushPendingResult();
     const { active, state } = await chrome.storage.local.get(['active', 'state']);
     // 桥接恢复后，别让"等待本机桥接：…"这条过期错误一直挂在状态里（排查时会被误导）
     if (!active && /^等待本机桥接/.test(String(state || ''))) await setState('已连接，等待任务');
@@ -224,6 +226,24 @@ async function pump() {
   }
 }
 
+/** 把结果回传给 broker；**先落盘再回传**，成功才清除。
+ *  为什么：服务工作线程随时可能被浏览器回收，一旦"结果"这一跳丢了，用户会白等到超时
+ *  （实测：答复 5 秒就读到了，结果 99 秒后才送到）。落盘之后每次 poll 都会补发。 */
+async function flushPendingResult() {
+  const { pendingResult } = await chrome.storage.local.get('pendingResult');
+  if (!pendingResult) return true;
+  const res = await api('/ext/result', pendingResult).catch(() => null);
+  if (res && res.ok !== false) {
+    const waited = Date.now() - (pendingResult.firstAt || Date.now());
+    if (waited > 3000) await setState(`结果延迟 ${Math.round(waited / 1000)} 秒后已补发`);
+    await chrome.storage.local.remove(['pendingResult', 'active']);
+    return true;
+  }
+  // broker 说这个任务已经不在它手里（过期/已结束）→ 丢弃，别无限补发
+  if (res && res.stale) { await chrome.storage.local.remove(['pendingResult', 'active']); return true; }
+  return false;   // 网络/服务不可用 → 留着，下一次唤醒再试
+}
+
 /** 页面驱动上报的进度与结果 → 转成 broker 的接口 */
 async function forward(message) {
   const { active } = await chrome.storage.local.get('active');
@@ -235,11 +255,19 @@ async function forward(message) {
     return { ok: true };
   }
   if (message.type === 'result') {
-    await api('/ext/result', {
-      taskId: active.id, lease: active.lease, ok: true, text: message.text, metrics: { ...(message.metrics || {}), reasoning: (message.reasoning || '').length },
-    }).catch(() => {});
-    await chrome.storage.local.remove('active');
-    await setState('已完成，等待下一轮');
+    // ① 先落盘：结果一旦读到就不能再丢（丢了用户只能白等到超时）
+    await chrome.storage.local.set({
+      pendingResult: {
+        taskId: active.id, lease: active.lease, ok: true,
+        text: message.text,
+        metrics: { ...(message.metrics || {}), reasoning: (message.reasoning || '').length },
+        firstAt: Date.now(),
+      },
+    });
+    // ② 立即尝试回传；失败就留在盘上，由下一次 poll（每 1.5 秒一次）补发
+    const sent = await flushPendingResult();
+    if (sent) await setState('已完成，等待下一轮');
+    else await setState('结果已拿到，正在重试回传');
     return { ok: true };
   }
   if (message.type === 'error') {
