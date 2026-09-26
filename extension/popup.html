@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>网页桥接（自研）</title>
+  <style>
+    body { width: 300px; margin: 0; padding: 12px 14px; font: 13px/1.6 system-ui, "Microsoft YaHei", sans-serif; color: #1f2937; }
+    h1 { font-size: 13px; margin: 0 0 8px; }
+    .row { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; }
+    .k { color: #6b7280; }
+    .v { text-align: right; word-break: break-all; }
+    .state { margin: 8px 0; padding: 7px 9px; background: #f3f4f6; border-radius: 7px; }
+    .err { color: #b91c1c; }
+    button { margin-top: 8px; width: 100%; padding: 6px; border: 1px solid #d1d5db; background: #fff; border-radius: 7px; cursor: pointer; }
+    button:hover { background: #f9fafb; }
+    .hint { color: #6b7280; font-size: 12px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>DeepSeek 网页桥接（自研 v1.0.0）</h1>
+  <div class="state" id="state">读取中…</div>
+  <div class="row"><span class="k">本机桥接</span><span class="v" id="broker">—</span></div>
+  <div class="row"><span class="k">专用标签页</span><span class="v" id="tab">—</span></div>
+  <div class="row"><span class="k">当前任务</span><span class="v" id="task">—</span></div>
+  <div class="row"><span class="k">最近错误</span><span class="v err" id="error">—</span></div>
+  <button id="open">打开 / 聚焦 DeepSeek 标签页</button>
+  <div class="hint">若显示"未连接"：确认本机桥接已启动（npm start），且本扩展在扩展页已启用。</div>
+  <script src="popup.js"></script>
+</body>
+</html>

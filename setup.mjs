@@ -11,11 +11,12 @@
 //   npm run setup -- --doctor
 
 import { randomBytes } from 'node:crypto';
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, basename } from 'node:path';
-import { CHROME_DIR, CONFIG_PATH, TOKEN_PATTERN, ensureDir, readConfig, writeConfig, updateConfig, PLUGIN_DIR } from './lib/config.mjs';
+import { CHROME_DIR, CONFIG_PATH, VENDOR_DIR, OWN_EXTENSION_DIR, TOKEN_PATTERN, ensureDir, readConfig, writeConfig, updateConfig, PLUGIN_DIR } from './lib/config.mjs';
 import { fetchUpstream, verifyVendor, extensionFiles, UPSTREAM } from './lib/upstream.mjs';
+import { applyPatches, verifyPatched, readManifest } from './lib/patches.mjs';
 import { pair, AGENT_VERSION } from './lib/agent.mjs';
 
 const args = process.argv.slice(2);
@@ -41,12 +42,20 @@ function checkNode() {
   if (major < 22) die(`需要 Node.js 22 及以上，当前是 ${process.versions.node}。请先升级 Node。`);
 }
 
-function buildExtensionDir(token) {
+function buildExtensionDir(token, mode = 'upstream') {
   ensureDir(CHROME_DIR);
-  const files = extensionFiles();
+  // own 模式：直接铺本仓库 extension/ 里我们自己的扩展（不碰 vendor/，也不需要上游）
+  const files = mode === 'own' ? ownExtensionFiles() : extensionFiles();
   for (const file of files) copyFileSync(file, join(CHROME_DIR, basename(file)));
   writeFileSync(join(CHROME_DIR, 'local-config.json'), JSON.stringify({ token }, null, 2) + '\n', { mode: 0o600 });
   return files.length;
+}
+
+/** 自研扩展的文件清单（扩展目录平铺，本地配置文件另写） */
+function ownExtensionFiles() {
+  const dir = OWN_EXTENSION_DIR;
+  if (!existsSync(join(dir, 'manifest.json'))) die(`找不到自研扩展目录：${dir}`);
+  return readdirSync(dir).filter((f) => f !== 'local-config.json').map((f) => join(dir, f));
 }
 
 function readManifestVersion() {
@@ -59,13 +68,35 @@ async function doctor() {
   checkNode();
   log(`✓ Node ${process.versions.node}`);
 
-  const check = existsSync(join(PLUGIN_DIR, 'broker.js')) ? verifyVendor() : { ok: false, reason: 'vendor 未拉取' };
-  if (check.ok) log(`✓ 上游副本可信：${check.total} 个文件 SHA-256 一致（${UPSTREAM.repo}@${UPSTREAM.tag}，基线 ${String(check.commit).slice(0, 12)}）`);
-  else log(`✗ 上游副本不可信：${check.reason} → 运行  npm run setup`);
-  // 反向检查：真正会被加载的目录（extension/、plugins/）里不该有清单之外的文件
-  if (check.extraFiles?.length) {
-    log(`⚠ 上游副本里有 ${check.extraFiles.length} 个清单之外的代码文件（不会被扩展加载，但建议核对）：`);
-    for (const f of check.extraFiles.slice(0, 8)) log('    ' + f);
+  const mode = process.env.DSH_WEB_BRIDGE_MODE || readConfig()?.bridge || 'upstream';
+  if (mode === 'own') {
+    const files = ownExtensionFiles().filter((f) => existsSync(f));
+    log(`✓ 实现：自研（own）—— 扩展 ${files.length} 个文件，来自本仓库 extension/（不使用上游、不需要 vendor/）`);
+    log('  · 首次使用需在浏览器扩展页「加载已解压的扩展程序」指向 ' + CHROME_DIR);
+    log('  · 回退到上游实现：npm run setup -- --bridge=upstream');
+  } else {
+    const check = existsSync(join(PLUGIN_DIR, 'broker.js')) ? verifyVendor() : { ok: false, reason: 'vendor 未拉取' };
+    // 打了补丁之后，文件必然与上游清单不再逐字节相同 —— 所以先看「原版+补丁」的记录，
+    // 记录一致就说明这份副本是我们预期的状态（原版可信 + 补丁是我们打的那几条）。
+    const patched = verifyPatched(VENDOR_DIR);
+    if (patched.ok === true) {
+      log(`✓ 上游原版 + ${patched.patches} 处本机补丁：补丁后 ${patched.checked} 个文件哈希一致`);
+      for (const p of readManifest(VENDOR_DIR)?.patches || []) log(`    · ${p.id}：${p.title}`);
+    } else if (patched.ok === false) {
+      log(`✗ 补丁状态异常：${patched.reason} → 重新 setup（或 npm run setup -- --no-patch 用原版）`);
+    } else if (check.ok) {
+      log(`✓ 上游副本可信：${check.total} 个文件 SHA-256 一致（${UPSTREAM.repo}@${UPSTREAM.tag}，基线 ${String(check.commit).slice(0, 12)}）`);
+    } else {
+      log(`✗ 上游副本不可信：${check.reason} → 运行  npm run setup`);
+    }
+    // 反向检查：真正会被加载的目录（extension/、plugins/）里不该有清单之外的文件
+    if (check.extraFiles?.length) {
+      const extra = check.extraFiles.filter((f) => f !== 'PATCHES.json');
+      if (extra.length) {
+        log(`⚠ 上游副本里有 ${extra.length} 个清单之外的代码文件（不会被扩展加载，但建议核对）：`);
+        for (const f of extra.slice(0, 8)) log('    ' + f);
+      }
+    }
   }
 
   const config = readConfig();
@@ -98,8 +129,32 @@ async function main() {
   log('=== dsh-webtokens-lite 初始化 ===');
   checkNode();
 
-  // 1) 上游（按引用拉取 + 校验）
-  await fetchUpstream({ force: flag('force'), log: (m) => log('  ' + m) });
+  // 0) 实现选择：--bridge=own 用自研实现（不下载上游）；不指定则沿用 config.json 里的设置
+  const modeArg = value('bridge');
+  if (modeArg && !['own', 'upstream'].includes(modeArg)) die('--bridge 只能是 own 或 upstream');
+  const mode = modeArg || readConfig()?.bridge || 'upstream';
+
+  // 1) 上游（按引用拉取 + 校验原版）——own 模式完全跳过，这正是重写的意义之一
+  if (mode === 'own') {
+    log('  · own 模式：使用本仓库自研实现（lib/broker.mjs + lib/protocol.mjs + extension/），不下载上游');
+  } else {
+    await fetchUpstream({ force: flag('force'), log: (m) => log('  ' + m) });
+    // 1b) 在原版之上应用本机补丁（--no-patch / DSH_WEB_BRIDGE_NO_PATCH=1 可跳过）
+    const noPatch = flag('no-patch') || process.env.DSH_WEB_BRIDGE_NO_PATCH === '1';
+    if (noPatch) {
+      log('  · 已按 --no-patch 跳过补丁（使用上游原版；每轮会多等 5 秒、格式问题要等 45 秒）');
+    } else {
+      const pr = await applyPatches({ vendorDir: VENDOR_DIR, tag: UPSTREAM.tag, log: (m) => log('  ' + m) });
+      if (pr.problems.length) {
+        log('  ⚠ 补丁未全部应用（上游版本可能变了）：');
+        for (const p of pr.problems) log('      ' + p);
+        log('    可以改用 --no-patch 跑上游原版；或更新 patches/ 里的锚点');
+      }
+      for (const a of pr.applied) log(`  ✓ 补丁已应用：${a.id}（${a.edits} 处修改）——${a.title}`);
+      for (const s of pr.skipped) log(`  · 补丁跳过：${s.id}（${s.reason}）`);
+      if (pr.patched?.ok) log(`  ✓ 补丁后完整性：${pr.patched.checked} 个文件哈希与记录一致`);
+    }
+  }
 
   // 2) 本机配对密钥
   let config = readConfig();
@@ -112,13 +167,16 @@ async function main() {
   }
 
   // 3) 扩展目录
-  const count = buildExtensionDir(config.token);
+  const count = buildExtensionDir(config.token, mode);
   log(`  ✓ 已铺出扩展目录（${count} 个文件）→ ${CHROME_DIR}`);
 
-  // 4) 记录来源，便于排查"这份扩展是哪来的"
+  // 4) 记录来源与实现选择，便于排查"这份扩展是哪来的"
   writeConfig({
     ...config,
-    vendor: { repo: UPSTREAM.repo, tag: UPSTREAM.tag, pluginVersion: UPSTREAM.coreVersion, chromeVersion: UPSTREAM.chromeVersion },
+    bridge: mode,
+    vendor: mode === 'own'
+      ? { mode: 'own', extensionVersion: readManifestVersion() }
+      : { repo: UPSTREAM.repo, tag: UPSTREAM.tag, pluginVersion: UPSTREAM.coreVersion, chromeVersion: UPSTREAM.chromeVersion, patched: !flag('no-patch') },
     agentVersion: AGENT_VERSION,
     updatedAt: new Date().toISOString(),
   });
