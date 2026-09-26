@@ -11,7 +11,7 @@
 
 (() => {
   const D = globalThis.DSHOwnDom;
-  const VERSION = '1.0.13';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
+  const VERSION = '1.0.14';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let active = null;
 
@@ -115,7 +115,13 @@
         // 只有"确实看到了本轮答复"才走进接受判定：
         //   rows → 行选择器命中；page-tail → 整页尾部文本里出现了本轮 request_id。
         // 少了 answerSeen 这道门，提示词自己（含 JSON 示例）会被当成答复，还可能引发重复提交。
-        if (confirmed && snap.answerSeen && snap.changed && D.stableEnough({ text: snap.text, stableMs: Date.now() - stableSince, hasStop: snap.generating })) {
+        //
+        // 再加一道 looksLikeAnswer：正文里必须出现本轮 request_id 或契约字段 "kind"。
+        // 真机踩到：网页会先渲染**思考过程/半截回答**，只按"文本稳定 2.5 秒"就认账会把半截文本
+        // 回传，客户端解析不到 JSON → 报「网页答复里没有可解析的 JSON 对象」并重试一次
+        // （用户看到的就是那条报错）。宁可多等一会儿，也不要回传半截内容。
+        const looksLike = D.looksLikeAnswer(snap.text, job.requestId);
+        if (confirmed && snap.answerSeen && looksLike && snap.changed && D.stableEnough({ text: snap.text, stableMs: Date.now() - stableSince, hasStop: snap.generating })) {
           const text = snap.text;
           if (!text.trim()) throw new Error('网页停止生成但没有可读的答复内容');
           sessionStorage.removeItem(sentKey);

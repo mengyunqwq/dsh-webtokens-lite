@@ -169,6 +169,17 @@ console.log('\n=== 4d) 类名失效时的兜底：只在页面尾部出现本轮
   check('没有 requestId 时绝不认账（防止把提示词当答案）', D.scan(makeDoc('随便什么文本'), { count: 0, lastText: '' }).answerSeen === false);
 }
 
+console.log('\n=== 4e) 认账门：必须看到本轮编号或契约字段 kind（防半截回答）===');
+{
+  // 真机踩到：网页先渲染思考过程/半截回答，扩展只按"文本稳定"就认账 → 回传半截文本 →
+  // 客户端报「网页答复里没有可解析的 JSON 对象」。所以认账前必须能看出"这是本轮的答复"。
+  check('含本轮 request_id → 认账', D.looksLikeAnswer('前言 {"request_id":"req-abc","kind":"final","text":"好"}', 'req-abc') === true);
+  check('含契约字段 kind → 认账（模型漏写编号时也不至于死等）', D.looksLikeAnswer('{"kind":"tool_calls","calls":[]}', 'req-abc') === true);
+  check('思考过程/半截回答 → 不认账', D.looksLikeAnswer('让我想想…用户问的是天气，我需要先查一下城市。', 'req-abc') === false);
+  check('空文本 → 不认账', D.looksLikeAnswer('', 'req-abc') === false);
+  check('没给 requestId 时只认 kind 字段', D.looksLikeAnswer('一段散文，没有任何字段', '') === false);
+}
+
 console.log('\n=== 5) 状态行文案 ===');check('生成中且已有文本 → 说明正在生成', D.phaseOf({ text: 'abc', generating: true, sent: true }) === '网页正在生成回复');
 check('只有思考 → 说明正在思考', D.phaseOf({ text: '', reasoning: '想', generating: true, sent: true }) === '网页正在思考');
 check('还没确认发送 → 说明在提交', D.phaseOf({ text: '', reasoning: '', generating: false, sent: false }) === '正在把提示词提交到网页');

@@ -299,6 +299,22 @@
     return '网页已生成完毕，正在回传';
   }
 
+  /**
+   * 看起来是不是"本轮的答复"？
+   * 判据：正文里出现本轮 request_id，或出现我们契约里的字段名 "kind"。
+   *
+   * 为什么必须有这道门（真机踩到）：网页会先渲染**思考过程/半截回答**，而扩展原来只按
+   * "文本稳定 2.5 秒"就认账 → 把半截文本回传 → 客户端解析不到 JSON，报
+   * 「网页答复里没有可解析的 JSON 对象」并带提醒重试一次（用户侧看到的就是那条报错）。
+   */
+  function looksLikeAnswer(text, requestId) {
+    const t = String(text || '');
+    if (!t) return false;
+    const rid = String(requestId || '');
+    if (rid && t.includes(rid)) return true;
+    return /"kind"\s*:/.test(t) || /'kind'\s*:/.test(t);
+  }
+
   /** 这个文档是不是登录/注册页（同一个域名，所以光靠 URL 匹配区分不出来） */
   function isSignInPage(doc) {
     try {
@@ -369,5 +385,6 @@
   globalThis.DSHOwnDom = {
     SELECTORS, isVisible, findComposer, findStop, findSend, rows, textOf, reasoningOf,
     captureBaseline, scan, completeJson, acceptDelay, stableEnough, pollDelay, phaseOf, diagnose, isSignInPage,
+    looksLikeAnswer,
   };
 })();
