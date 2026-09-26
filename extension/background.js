@@ -8,7 +8,7 @@
 //   · 取消（broker 回 cancelled 或用户点停止）会传给页面驱动，让它点网页的停止按钮。
 
 const DEFAULTS = { base: 'http://127.0.0.1:3081' };
-const VERSION = '1.0.1';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
+const VERSION = '1.0.3';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
 let pumping = false;
 
 const configPromise = (async () => {
@@ -84,6 +84,17 @@ function waitForComplete(tabId, timeoutMs = 15_000) {
 }
 
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 等内容脚本报 ready（输入框出现）。页面刚加载完到输入框可用之间有一段空窗。 */
+async function waitForReady(tabId, timeoutMs = 12_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const health = await ask(tabId, { type: 'health' });
+    if (health?.ready) return health;
+    if (Date.now() > deadline) return health || null;
+    await pause(500);
+  }
+}
 
 /**
  * 拿到内容脚本的健康状态；必要时**重载一次标签页**再重试。
@@ -170,8 +181,11 @@ async function pump() {
       // 先记"已派发"，再让它提交：任何中途重载都不会导致重复提问
       await chrome.storage.local.set({ active: { ...job, tabId: tab.id, dispatched: true, startedAt: Date.now() } });
       const health = await ensureContentScript(tab.id);
-      if (!health?.ready) {
-        await fail({ ...job }, health ? '专用标签页还没准备好（可能未登录 chat.deepseek.com）' : '专用标签页没有响应扩展（已在安装后重载过一次仍无应答，请确认该页面能正常打开）', 'WEB_PAGE_NOT_READY');
+      // 输入框要等页面渲染完才出现（尤其扩展刚重载、自愈又把页面重载了一次的时候）。
+      // 早先只查一次就判死 —— 实测报成"未登录"，其实只是页面还在加载。
+      const ready = health?.ready ? health : await waitForReady(tab.id);
+      if (!ready?.ready) {
+        await fail({ ...job }, ready ? '专用标签页还没准备好（可能未登录 chat.deepseek.com，或页面还在加载）' : '专用标签页没有响应扩展（已在安装后重载过一次仍无应答，请确认该页面能正常打开）', 'WEB_PAGE_NOT_READY');
         return;
       }
       const sent = await ask(tab.id, { type: 'run', job });

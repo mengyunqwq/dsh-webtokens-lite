@@ -75,12 +75,22 @@
     return [];
   }
 
-  /** 取一段文本，排除思考容器与代码块之外的噪音；代码块内容要保留（答复本身可能是 JSON 围栏） */
+  /** 取一段文本，排除思考容器；代码块内容要保留（答复本身可能是 JSON 围栏） */
   function textOf(el, { keepCode = true } = {}) {
     if (!el) return '';
     const clone = cloneWithoutThink(el);
     let text = '';
-    try { text = clone.innerText ?? clone.textContent ?? ''; } catch { text = ''; }
+    try {
+      if (clone === el) {
+        // 没克隆成功（拿到的是活节点）→ innerText 才可靠
+        text = el.innerText ?? el.textContent ?? '';
+      } else {
+        // **必须用 textContent**：clone 是脱离文档的节点，Chromium 对脱离文档节点的 innerText
+        // 返回**空串**（是空串而不是 undefined，所以 `??` 兜不住）。实测表现：答复文本永远为空、
+        // 一直停在"正在确认是否有答复"直到 120 秒超时。textContent 不依赖渲染，脱离文档也能读。
+        text = clone.textContent ?? '';
+      }
+    } catch { text = ''; }
     return keepCode ? String(text) : String(text).replace(/```[\s\S]*?```/g, '');
   }
 

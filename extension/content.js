@@ -11,7 +11,7 @@
 
 (() => {
   const D = globalThis.DSHOwnDom;
-  const VERSION = '1.0.1';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
+  const VERSION = '1.0.3';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let active = null;
 
@@ -76,6 +76,7 @@
       let lastText = '';
       let stableSince = 0;
       let reasoning = '';
+      let stoppedEmptySince = 0;   // 停止生成却读不到文本的起始时刻（用于快速失败）
       while (!job.cancelled && Date.now() - started < 590000) {
         await sleep(D.pollDelay(!!D.findStop(document)));
         if (job.cancelled) break;
@@ -89,7 +90,18 @@
         if (!confirmed && Date.now() - sentAt > 12000) throw new Error('网页未确认收到这条消息，为避免重复提交已停止；请检查专用标签页');
 
         const phase = D.phaseOf({ text: snap.text, reasoning, generating: snap.generating, sent: confirmed });
-        if (phase !== lastPhase) { lastPhase = phase; report('progress', { phase }); }
+        // 停止生成却读不到文本时，把"我到底看到了什么"一起报出来：否则外部只能看到"卡住了"，
+        // 无法区分是选择器没命中、页面没渲染完、还是文本在别的容器里（实测就这样白等了 120 秒）。
+        const diag = (confirmed && !snap.generating && !snap.text) ? `（命中 ${snap.rowCount} 行，读到 ${String(snap.text || '').length} 字）` : '';
+        const phaseLine = phase + diag;
+        if (phaseLine !== lastPhase) { lastPhase = phaseLine; report('progress', { phase: phaseLine }); }
+        // 而且不再无限等：网页明明停止生成了、却长时间读不到任何文本，就带着现场信息报错。
+        if (confirmed && !snap.generating && !snap.text) {
+          if (!stoppedEmptySince) stoppedEmptySince = Date.now();
+          else if (Date.now() - stoppedEmptySince > 20_000) {
+            throw new Error(`网页已停止生成但读不到答复文本（命中 ${snap.rowCount} 行）——可能是页面结构变了，把这条信息发我即可定位`);
+          }
+        } else stoppedEmptySince = 0;
         if (snap.text !== lastText) { lastText = snap.text; stableSince = Date.now(); }
         if (confirmed && snap.changed && D.stableEnough({ text: snap.text, stableMs: Date.now() - stableSince, hasStop: snap.generating })) {
           const text = snap.text;
