@@ -11,7 +11,7 @@
 
 (() => {
   const D = globalThis.DSHOwnDom;
-  const VERSION = '1.0.11';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
+  const VERSION = '1.0.13';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let active = null;
 
@@ -55,7 +55,7 @@
       const draft = D.findComposer(document);
       if (draft && String(draft.value || '').trim()) throw new Error('网页输入框里已有内容，为避免覆盖已停止本轮');
 
-      const baseline = D.captureBaseline(document);
+      const baseline = D.captureBaseline(document, job.requestId);
       let input = D.findComposer(document);
       if (!input) throw new Error('找不到网页输入框');
       // ① 落标记：之后任何重载都只报错、不重发
@@ -112,12 +112,15 @@
           }
         } else stoppedEmptySince = 0;
         if (snap.text !== lastText) { lastText = snap.text; stableSince = Date.now(); }
-        if (confirmed && snap.changed && D.stableEnough({ text: snap.text, stableMs: Date.now() - stableSince, hasStop: snap.generating })) {
+        // 只有"确实看到了本轮答复"才走进接受判定：
+        //   rows → 行选择器命中；page-tail → 整页尾部文本里出现了本轮 request_id。
+        // 少了 answerSeen 这道门，提示词自己（含 JSON 示例）会被当成答复，还可能引发重复提交。
+        if (confirmed && snap.answerSeen && snap.changed && D.stableEnough({ text: snap.text, stableMs: Date.now() - stableSince, hasStop: snap.generating })) {
           const text = snap.text;
           if (!text.trim()) throw new Error('网页停止生成但没有可读的答复内容');
           sessionStorage.removeItem(sentKey);
           banner('Harness 专用会话 · 答复已回传');
-          report('result', { text, reasoning, metrics: { chars: text.length, ms: Date.now() - started, rows: snap.rowCount } });
+          report('result', { text, reasoning, metrics: { chars: text.length, ms: Date.now() - started, rows: snap.rowCount, source: snap.source } });
           return;
         }
         banner('Harness 专用会话 · ' + phase);

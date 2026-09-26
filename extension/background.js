@@ -8,7 +8,7 @@
 //   · 取消（broker 回 cancelled 或用户点停止）会传给页面驱动，让它点网页的停止按钮。
 
 const DEFAULTS = { base: 'http://127.0.0.1:3081' };
-const VERSION = '1.0.11';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
+const VERSION = '1.0.13';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
 let pumping = false;
 
 const configPromise = (async () => {
@@ -301,7 +301,13 @@ async function forward(message) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // 只信任：本扩展自己的页面驱动、以及本扩展的 popup
   if (sender?.id !== chrome.runtime.id) { sendResponse({ error: '不受信任的发送方' }); return true; }
-  if (message?.type === 'tick') { sendResponse({ ok: true }); return true; }
+  // 页面心跳（内容脚本每 3 秒一次）**顺便驱动轮询**。
+  // 为什么这很关键：定时器回调不算"事件"，MV3 可以在下一次回调前把服务工作线程回收掉——
+  // 那条已经发出的长轮询 socket 还开着，但已经没人处理响应，broker 看它是个"活着的等待者"，
+  // 派进去的任务就凭空消失（实测：每次任务都要靠 3 秒后的重新派发才成功）。
+  // 而处理消息**是事件**，期间线程不会被回收，所以心跳一来就顺手把轮询续上。
+  // pump() 自身有并发保护：已有轮询在飞时它会直接返回，不会叠加出多余的长轮询。
+  if (message?.type === 'tick') { pump(); sendResponse({ ok: true }); return true; }
   if (sender.tab && !String(sender.tab.url || '').startsWith('https://chat.deepseek.com/')) { sendResponse({ error: '不受信任的来源页面' }); return true; }
   if (['progress', 'result', 'error'].includes(message?.type)) {
     forward(message).then((r) => sendResponse(r)).catch((e) => sendResponse({ error: e.message }));

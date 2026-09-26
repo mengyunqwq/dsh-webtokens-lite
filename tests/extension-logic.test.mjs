@@ -146,6 +146,29 @@ console.log('\n=== 4c) 现场诊断（读不到答复时用来自证"页面到�
   check('正常聊天页不误判为登录页', D.isSignInPage({ location: { href: 'https://chat.deepseek.com/a/chat/s/xx' }, querySelectorAll: () => [1], body: { textContent: '登录' } }) === false);
 }
 
+console.log('\n=== 4d) 类名失效时的兜底：只在页面尾部出现本轮 request_id 时才算答复 ===');
+{
+  // 类名哈希化之后行选择器可能一个都不命中，所以 scan 会退回"整页尾部文本"；
+  // 但**必须**等本轮 request_id 出现，否则提示词自己（也含 JSON 示例）会被当成答复。
+  const makeDoc = (bodyText) => ({
+    querySelectorAll: () => [],
+    querySelector: () => null,
+    body: { innerText: bodyText, textContent: bodyText },
+    location: { href: 'https://chat.deepseek.com/a/chat/s/x' },
+    title: 'DeepSeek',
+    readyState: 'complete',
+  });
+  const baseline = { count: 0, lastText: '', requestId: 'req-abc123' };
+
+  const promptOnly = D.scan(makeDoc('【本机桥接输出格式硬性要求】…{"request_id":"req-示例编号",…}'), baseline);
+  check('只有提示词时：识别为"还没看到答复"', promptOnly.answerSeen === false && promptOnly.source === 'none', JSON.stringify({ source: promptOnly.source, seen: promptOnly.answerSeen }));
+
+  const withAnswer = D.scan(makeDoc('…提示词…\n{"request_id":"req-abc123","kind":"final","text":"你好"}'), baseline);
+  check('页面尾部出现本轮编号时：识别为答复', withAnswer.answerSeen === true && withAnswer.source === 'page-tail');
+  check('尾部文本能被解析出正确结果', D.completeJson(withAnswer.text) && withAnswer.text.includes('req-abc123'));
+  check('没有 requestId 时绝不认账（防止把提示词当答案）', D.scan(makeDoc('随便什么文本'), { count: 0, lastText: '' }).answerSeen === false);
+}
+
 console.log('\n=== 5) 状态行文案 ===');check('生成中且已有文本 → 说明正在生成', D.phaseOf({ text: 'abc', generating: true, sent: true }) === '网页正在生成回复');
 check('只有思考 → 说明正在思考', D.phaseOf({ text: '', reasoning: '想', generating: true, sent: true }) === '网页正在思考');
 check('还没确认发送 → 说明在提交', D.phaseOf({ text: '', reasoning: '', generating: false, sent: false }) === '正在把提示词提交到网页');

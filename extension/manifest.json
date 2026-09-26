@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DeepSeek 网页桥接（自研）",
-  "version": "1.0.11",
+  "version": "1.0.13",
   "description": "把本机中转站/Harness 的任务送到已登录的 DeepSeek 网页，再把答复原文带回来。只搬运文本，不解析、不上传任何凭据。",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "alarms", "tabs"],

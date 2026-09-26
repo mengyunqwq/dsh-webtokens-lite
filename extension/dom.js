@@ -28,6 +28,9 @@
     // 思考过程容器：取答复文本时必须排除，否则"思考"里的 JSON 会污染解析
     think: ['.ds-think-content', '[class*="thinking"]', '[data-role="thinking"]', '[class*="think-content"]'],
     composer: ['textarea'],
+    // 新版网页的输入框是富文本容器（contenteditable），不是 textarea —— 实测只找 textarea 时会
+    // 写进一个隐藏的 1×1 元素，页面上表现成"提示词摆着、永远没有回答"
+    editable: ['[contenteditable="true"]', '[contenteditable=""]', '[contenteditable="plaintext-only"]'],
     // 停止按钮：生成中才存在，是我们判断"是否还在生成"的唯一可靠信号
     stopText: /^\s*(停止生成|停止|Stop generating|Stop\b)/i,
     sendButton: ['[data-testid="send-button"]', 'button[type="submit"]', 'div[role="button"][aria-label*="发送"]'],
@@ -63,9 +66,50 @@
     } catch { return false; }
   }
 
-  /** 输入框：可见且未禁用的 textarea */
+  /** 尺寸合理才算"真输入框"：排除隐藏/装饰性的 1×1 元素。
+   *  实测踩到：页面里有个 1×1 的 textarea 通过了"可见"判定，于是文字被写进了一个用户看不到、
+   *  也永远不会提交的输入框——页面上的表现就是"提示词摆着、没有回答"。 */
+  function isBigEnough(el) {
+    try {
+      const r = el.getBoundingClientRect?.();
+      if (!r) return true;
+      if (r.width === 0 && r.height === 0) return false;
+      return r.width >= 60 && r.height >= 12;
+    } catch { return true; }
+  }
+
+  /** 输入框：**优先可见的 contenteditable**（新版网页就是富文本容器），退回尺寸合理的 textarea */
   function findComposer(doc) {
-    return all(doc, SELECTORS.composer.join(',')).find((el) => isVisible(el) && !el.readOnly) || null;
+    const editable = all(doc, SELECTORS.editable.join(',')).filter((el) => isVisible(el) && isBigEnough(el));
+    if (editable.length) return editable[editable.length - 1];
+    const areas = all(doc, SELECTORS.composer.join(',')).filter((el) => isVisible(el) && !el.readOnly && isBigEnough(el));
+    return areas[areas.length - 1] || null;
+  }
+
+  /** 读输入框里的文字（textarea 与 contenteditable 两种形态） */
+  function composerText(el) {
+    if (!el) return '';
+    return el.tagName === 'TEXTAREA' ? String(el.value || '') : String(el.textContent || '');
+  }
+
+  /** 写输入框：按形态分别处理。contenteditable 用 execCommand('insertText')（会触发框架的
+   *  input 事件），失败再退回 textContent + input 事件。 */
+  function setComposerText(doc, el, text) {
+    if (!el) return false;
+    if (el.tagName === 'TEXTAREA') {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      if (setter) setter.call(el, text); else el.value = text;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    }
+    try { el.focus?.(); } catch { /* ignore */ }
+    let ok = false;
+    try { ok = doc.execCommand?.('insertText', false, text) === true; } catch { ok = false; }
+    if (!ok || composerText(el).trim() !== String(text).trim()) {
+      try { el.textContent = text; } catch { /* ignore */ }
+      try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch { /* ignore */ }
+    }
+    return true;
   }
 
   /** 停止按钮：可见的 button/[role=button] 且文本是"停止生成"一类 */
@@ -139,32 +183,54 @@
     return parts.join('\n');
   }
 
-  /** 提交前的基线：记住"当时最后一条助手消息是谁、文本多长" */
-  function captureBaseline(doc) {
+  /** 提交前的基线：记住"当时最后一条助手消息是谁、文本多长"，以及本轮的 request_id
+   *  （request_id 用来判断"页面尾部是否已经出现本轮答复"——不能只凭"页面上有文本"就认账，
+   *  否则提示词自己也会被当成答复）。 */
+  function captureBaseline(doc, requestId = '') {
     const list = rows(doc);
     const lastEl = list[list.length - 1] || null;
     return {
       count: list.length,
       lastText: lastEl ? textOf(lastEl) : '',
+      requestId: String(requestId || ''),
       at: Date.now(),
     };
   }
 
   /**
-   * 读当前答复。返回 { text, reasoning, generating, changed }
+   * 读当前答复。返回 { text, reasoning, generating, changed, rowCount, source }
    * changed：相对基线是否已经出现"新的助手消息"（行数变多，或最后一条文本变了）
+   * 关键兜底：**类名哈希化之后，靠类名的选择器随时会失效**（实测上游那套 `.ds-markdown`
+   * 已经不存在）。所以当行选择器一个都不命中时，退回"页面尾部整段文本"——
+   * 由客户端去里面找 JSON（提示词里的示例已用占位编号，不会被误认成答案）。
    */
   function scan(doc, baseline) {
     const list = rows(doc);
     const lastEl = list[list.length - 1] || null;
-    const text = lastEl ? textOf(lastEl) : '';
+    let text = lastEl ? textOf(lastEl) : '';
+    let source = text ? 'rows' : 'none';
+    if (!text) {
+      // 兜底：整页尾部文本。tailLength 取 3000 字，足够覆盖一条 JSON 答复与其上下文。
+      let tail = '';
+      try { tail = String(doc.body?.innerText || doc.body?.textContent || ''); } catch { tail = ''; }
+      if (tail) { text = tail.slice(-3000); source = 'page-tail'; }
+    }
     const changed = list.length > (baseline?.count ?? 0) || (!!text && text !== (baseline?.lastText ?? ''));
+    // 到底算不算"看到了答复"：
+    //   byRows —— 行选择器命中（老结构/还有类名时就这样）
+    //   byTail —— 退回整页尾部文本，但**必须真的出现本轮的 request_id**，否则提示词自己
+    //             （里面也有 JSON 示例）会被当成答复
+    const rid = String(baseline?.requestId || '');
+    const byRows = list.length > 0 && !!text;
+    const byTail = !byRows && !!rid && text.includes(rid);
     return {
       text,
       reasoning: reasoningOf(doc),
       generating: !!findStop(doc),
       changed,
       rowCount: list.length,
+      source: byRows ? 'rows' : (byTail ? 'page-tail' : 'none'),
+      answerSeen: byRows || byTail,
     };
   }
 
