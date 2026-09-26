@@ -11,7 +11,7 @@
 
 (() => {
   const D = globalThis.DSHOwnDom;
-  const VERSION = '1.0.10';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
+  const VERSION = '1.0.11';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let active = null;
 

@@ -280,7 +280,24 @@
     // 穿透 shadow 后的命中数：与上面的 counts 对照，就能区分"选择器不对"与"内容在 Shadow DOM 里"
     let deepHits = '?';
     try { deepHits = String(deepQueryAll(doc, '[class*="markdown"], .ds-markdown, [data-message-role], article').length); } catch { /* ignore */ }
-    return `[诊断 url=${where} 登录页=${isSignInPage(doc) ? '是' : '否'} ${counts} 穿透shadow后=${deepHits} readyState=${ready} body文本长度=${textLen} 有shadowRoot的元素=${shadowRoots} div数=${divs} iframe数=${frames} 类名样本=${classes}]`;
+    // **最关键的一条**：页面上"有实质文本"的最后几个元素（标签 + 首个类名 + 长度 + 前 30 字预览）。
+    // 类名哈希化之后，只有这个能直接指出"答复到底在哪个容器里"，不必再靠猜选择器。
+    let samples = '?';
+    try {
+      const withText = [...doc.querySelectorAll('*')]
+        .filter((el) => {
+          const t = String(el.textContent || '').trim();
+          return t.length > 40 && (el.children?.length ?? 0) <= 2;   // 只挑"叶子级"的文本块
+        })
+        .slice(-4)
+        .map((el) => {
+          const cls = String(el.className || '').split(/\s+/).filter(Boolean)[0] || '-';
+          const t = String(el.textContent || '').trim().replace(/\s+/g, ' ');
+          return `${String(el.tagName).toLowerCase()}.${cls}(${t.length})「${t.slice(0, 30)}」`;
+        });
+      samples = withText.join(' ');
+    } catch { /* ignore */ }
+    return `[诊断 url=${where} 登录页=${isSignInPage(doc) ? '是' : '否'} ${counts} 穿透shadow后=${deepHits} readyState=${ready} body文本长度=${textLen} 有shadowRoot的元素=${shadowRoots} div数=${divs} iframe数=${frames} 类名样本=${classes} 文本块=${samples}]`;
   }
 
   globalThis.DSHOwnDom = {
