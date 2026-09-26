@@ -158,8 +158,15 @@ async function pump() {
     }
 
     if (poll.task && !active) {
-      const tab = await ensureTab();
       const job = { id: poll.task.id, lease: poll.task.lease, prompt: poll.task.prompt, timeoutMs: poll.task.timeoutMs };
+      // 一级确认：**立刻**告诉 broker「我收到了」，赶在找标签页/自愈重载之前。
+      // 这样"页面正在加载"这段合法的慢就不会被误判成丢件而重发（重发意味着同一提示词
+      // 有被提交两次的风险）。真正的"接手"仍由内容脚本的第一份进度证明——两层缺一不可。
+      await api('/ext/progress', {
+        taskId: job.id, lease: job.lease, stage: 'receipt',
+        phase: '扩展已收到任务，正在准备标签页',
+      }).catch(() => { /* 确认失败不影响正事：真正的接手进度还会再报一次 */ });
+      const tab = await ensureTab();
       // 先记"已派发"，再让它提交：任何中途重载都不会导致重复提问
       await chrome.storage.local.set({ active: { ...job, tabId: tab.id, dispatched: true, startedAt: Date.now() } });
       const health = await ensureContentScript(tab.id);
