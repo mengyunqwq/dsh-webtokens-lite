@@ -1,6 +1,6 @@
 // 自研 broker 测试：用「假扩展 + 假客户端」跑完整生命周期（无需浏览器）
 import { request as httpRequest } from 'node:http';
-import { createBroker } from '../lib/broker.js';
+import { createBroker } from '../lib/broker.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
