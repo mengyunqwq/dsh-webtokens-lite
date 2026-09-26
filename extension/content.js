@@ -11,7 +11,7 @@
 
 (() => {
   const D = globalThis.DSHOwnDom;
-  const VERSION = '1.0.9';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
+  const VERSION = '1.0.10';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let active = null;
 
@@ -97,14 +97,16 @@
           : '';
         const phaseLine = phase + diag;
         if (phaseLine !== lastPhase) { lastPhase = phaseLine; report('progress', { phase: phaseLine }); }
-        // 而且不再无限等：网页明明停止生成了、却长时间读不到任何文本，就带着现场信息报错。
+        // 不再无限等，但也不能催太急：**实测长提示词网页要 ~20 秒才渲染出答复**
+        // （有一次 20.1 秒才读到），25 秒的窗口正好踩在边界上，会把"慢答复"误判成"读不到"。
+        // 上限仍然要有：真遇到结构变化时，不该静默等到客户端的 240 秒预算。
         if (confirmed && !snap.generating && !snap.text) {
           if (!stoppedEmptySince) stoppedEmptySince = Date.now();
-          else if (Date.now() - stoppedEmptySince > 25_000) {
-            // 用**不可重试**的错误码：提示词可能已经发出去了（confirmed=true），让调用方自动
-            // 重试就会在用户账号里留下第二条一样的提问。宁可把它交给用户/宿主去判断。
+          else if (Date.now() - stoppedEmptySince > 60_000) {
+            // 用**不可重试**的错误码：提示词已经发出去了（confirmed=true），让调用方自动重试
+            // 就会在用户账号里留下第二条一样的提问。宁可把它交给用户/宿主去判断。
             throw Object.assign(
-              new Error(`网页已停止生成但读不到答复文本（命中 ${snap.rowCount} 行，读到 0 字）——可能页面还在加载，或页面结构变了`),
+              new Error(`提交后 ${Math.round((Date.now() - stoppedEmptySince) / 1000)} 秒仍读不到答复文本（命中 ${snap.rowCount} 行）——页面可能一直在渲染，或页面结构变了`),
               { code: 'WEB_NO_REPLY_AFTER_SEND' },
             );
           }
