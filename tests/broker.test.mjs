@@ -1,6 +1,6 @@
 // 自研 broker 测试：用「假扩展 + 假客户端」跑完整生命周期（无需浏览器）
 import { request as httpRequest } from 'node:http';
-import { createBroker } from '../lib/broker.mjs';
+import { createBroker } from '../lib/broker.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -9,7 +9,9 @@ const check = (name, ok, extra = '') => { if (ok) { pass++; console.log('  ✓ '
 const watchdog = setTimeout(() => { console.log('\n⏱ 测试自身超时（60s）——说明还有地方会挂住'); process.exit(3); }, 60_000);
 
 const TOKEN = 'tk_test_' + Math.random().toString(16).slice(2);
-const broker = createBroker({ token: TOKEN, port: 0, timeoutMs: 3000, stallMs: 1200, log: () => {} });
+// 注意：确认窗口（ackTimeoutMs / handoffTimeoutMs）显式放大，让"停滞看门狗"先触发——
+// 否则 1.5 秒的确认窗口会先把任务重新派发，第 6 节就测不到想测的东西（实测踩到）。
+const broker = createBroker({ token: TOKEN, port: 0, timeoutMs: 3000, stallMs: 1200, ackTimeoutMs: 20_000, handoffTimeoutMs: 20_000, log: () => {} });
 await broker.start();
 const BASE = `http://127.0.0.1:${broker.port}`;
 console.log(`  broker 起在 ${BASE}`);

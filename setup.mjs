@@ -21,10 +21,35 @@ import { pair, AGENT_VERSION } from './lib/agent.mjs';
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes('--' + name);
+/**
+ * 取单个参数的值，**两种写法都支持**：`--name=value` 与 `--name value`。
+ *
+ * 为什么必须支持等号写法：文档与安装器用的都是 `--bridge=own`，而这里原来只认空格写法，
+ * 于是 modeArg 静默变成 undefined、回退到 upstream —— 用户以为装的是自研实现，实际装出来
+ * 的是上游扩展（还会去 GitHub 拉上游代码）。这种"静默回退"比报错危险得多，所以下面还加了
+ * 一层"给了 --bridge 却没解析出来就报错"的兜底。
+ */
 const value = (name) => {
+  const inline = args.find((a) => a.startsWith('--' + name + '='));
+  if (inline) return inline.slice(('--' + name + '=').length);
   const i = args.indexOf('--' + name);
   return i >= 0 ? args[i + 1] : undefined;
 };
+
+/**
+ * 统一解析"用哪种实现"：`--bridge` > 环境变量 `DSH_WEB_BRIDGE_MODE` > `config.json.bridge` > upstream。
+ * 两条路径（doctor 与真正的安装）必须共用这一处 —— 原来 doctor 自己另写了一套、且不看 `--bridge`，
+ * 于是 `setup --doctor --bridge=own` 会照着 upstream 的状态汇报，等于骗人。
+ */
+function resolveMode() {
+  const modeArg = value('bridge');
+  if (modeArg && !['own', 'upstream'].includes(modeArg)) die('--bridge 只能是 own 或 upstream');
+  // 防静默回退：明明给了 --bridge 却没解析出值 —— 宁可停下报错，也不要把用户装成另一种实现
+  if (!modeArg && args.some((a) => a === '--bridge' || a.startsWith('--bridge='))) {
+    die('没有认出 --bridge 的值（两种写法都可以：--bridge=own 或 --bridge own）');
+  }
+  return modeArg || process.env.DSH_WEB_BRIDGE_MODE || readConfig()?.bridge || 'upstream';
+}
 
 function log(...a) { console.log(...a); }
 function die(message) { console.error('\n✗ ' + message + '\n'); process.exit(1); }
@@ -58,9 +83,13 @@ function ownExtensionFiles() {
   return readdirSync(dir).filter((f) => f !== 'local-config.json').map((f) => join(dir, f));
 }
 
-function readManifestVersion() {
-  try { return JSON.parse(readFileSync(join(CHROME_DIR, 'manifest.json'), 'utf8')).version; }
+function readManifestField(field) {
+  try { return JSON.parse(readFileSync(join(CHROME_DIR, 'manifest.json'), 'utf8'))[field] ?? null; }
   catch { return null; }
+}
+
+function readManifestVersion() {
+  return readManifestField('version');
 }
 
 async function doctor() {
@@ -68,7 +97,7 @@ async function doctor() {
   checkNode();
   log(`✓ Node ${process.versions.node}`);
 
-  const mode = process.env.DSH_WEB_BRIDGE_MODE || readConfig()?.bridge || 'upstream';
+  const mode = resolveMode();
   if (mode === 'own') {
     const files = ownExtensionFiles().filter((f) => existsSync(f));
     log(`✓ 实现：自研（own）—— 扩展 ${files.length} 个文件，来自本仓库 extension/（不使用上游、不需要 vendor/）`);
@@ -129,10 +158,8 @@ async function main() {
   log('=== dsh-webtokens-lite 初始化 ===');
   checkNode();
 
-  // 0) 实现选择：--bridge=own 用自研实现（不下载上游）；不指定则沿用 config.json 里的设置
-  const modeArg = value('bridge');
-  if (modeArg && !['own', 'upstream'].includes(modeArg)) die('--bridge 只能是 own 或 upstream');
-  const mode = modeArg || readConfig()?.bridge || 'upstream';
+  // 0) 实现选择：--bridge=own 用自研实现（不下载上游）；解析规则见 resolveMode()
+  const mode = resolveMode();
 
   // 1) 上游（按引用拉取 + 校验原版）——own 模式完全跳过，这正是重写的意义之一
   if (mode === 'own') {
@@ -205,7 +232,9 @@ async function main() {
   log(`     ${CHROME_DIR}`);
   log(`   打开  edge://extensions  或  chrome://extensions  →  打开「开发人员模式」`);
   log(`   →  点「加载解压缩的扩展」→ 选上面这个目录`);
-  log(`   →  确认卡片名为「DeepSeek Harness 网页桥接」、版本 ${UPSTREAM.chromeVersion}`);
+  // 卡片名/版本按**实际铺出的 manifest** 显示：own 模式是我们的「DeepSeek 网页桥接（自研）」，
+  // 上游模式是上游那张卡 —— 写死任何一个都会在另一种模式下骗人（实测就是这么错的）
+  log(`   →  确认卡片名为「${readManifestField('name') || '（见 manifest）'}」、版本 ${readManifestVersion() || '?'}`);
   log(`   注意：同一个浏览器配置里只装一份；别去加载仓库里的 extension 目录（缺少配对文件）`);
   log('');
   log('② 在那个浏览器里打开 https://chat.deepseek.com/ 并登录（保持登录）');

@@ -12,7 +12,7 @@
     "setup": "node setup.mjs",
     "start": "node start.mjs",
     "doctor": "node setup.mjs --doctor",
-    "test": "node tests/protocol.test.mjs && node tests/broker.test.mjs && node tests/extension-logic.test.mjs && node tests/own-call.test.mjs && node tests/patch.test.mjs"
+    "test": "node tests/protocol.test.mjs && node tests/broker.test.mjs && node tests/extension-logic.test.mjs && node tests/own-call.test.mjs && node tests/patch.test.mjs && node tests/args.test.mjs"
   },
   "dependencies": {
     "ajv": "8.20.0"
