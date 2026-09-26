@@ -8,7 +8,7 @@
 //   · 取消（broker 回 cancelled 或用户点停止）会传给页面驱动，让它点网页的停止按钮。
 
 const DEFAULTS = { base: 'http://127.0.0.1:3081' };
-const VERSION = '1.0.1';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
+const VERSION = '1.0.9';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
 let pumping = false;
 
 const configPromise = (async () => {
@@ -53,14 +53,31 @@ async function setState(state, patch = {}) {
 /** 找到（或打开）一个 DeepSeek 标签页 */
 async function ensureTab() {
   const tabs = await chrome.tabs.query({ url: 'https://chat.deepseek.com/*' });
+  // 按"上次选定 → 逐个问健康 → 跳过登录页"来挑一个**真正可用**的标签页。
+  // 为什么不能只取第一个：同一域名下可能有多个标签页，其中一个停在登录页或已被丢弃。
+  // 实测踩到：扩展一直在驱动一个停在登录页的旧标签页，而用户看的是另一个能正常回答的
+  // 标签页 —— 于是"页面上明明有答复，内容脚本却报命中 0 行"。
+  const { bridgeTabId } = await chrome.storage.local.get('bridgeTabId');
+  const ordered = [...tabs].sort((a, b) => (a.id === bridgeTabId ? -1 : b.id === bridgeTabId ? 1 : 0));
+  for (const tab of ordered) {
+    if (/sign[_-]?in|login|register/i.test(String(tab.url || ''))) continue;
+    const health = await ask(tab.id, { type: 'health' });
+    if (health?.ready) {
+      await chrome.storage.local.set({ bridgeTabId: tab.id });
+      try { await chrome.tabs.update(tab.id, { autoDiscardable: false }); } catch { /* ignore */ }
+      return tab;
+    }
+  }
   if (tabs.length) {
-    const tab = tabs[0];
+    const tab = tabs.find((t) => !/sign[_-]?in|login|register/i.test(String(t.url || ''))) || tabs[0];
+    await chrome.storage.local.set({ bridgeTabId: tab.id });
     try { await chrome.tabs.update(tab.id, { autoDiscardable: false }); } catch { /* ignore */ }
     return tab;
   }
   const created = await chrome.tabs.create({ url: 'https://chat.deepseek.com/', active: false });
   try { await chrome.tabs.update(created.id, { autoDiscardable: false }); } catch { /* ignore */ }
   await waitForComplete(created.id);   // 等它加载完，否则后面发消息一定没人应答
+  await chrome.storage.local.set({ bridgeTabId: created.id });
   return created;
 }
 
@@ -84,6 +101,17 @@ function waitForComplete(tabId, timeoutMs = 15_000) {
 }
 
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 等内容脚本报 ready（输入框出现）。页面刚加载完到输入框可用之间有一段空窗。 */
+async function waitForReady(tabId, timeoutMs = 12_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const health = await ask(tabId, { type: 'health' });
+    if (health?.ready) return health;
+    if (Date.now() > deadline) return health || null;
+    await pause(500);
+  }
+}
 
 /**
  * 拿到内容脚本的健康状态；必要时**重载一次标签页**再重试。
@@ -118,6 +146,8 @@ async function pump() {
   if (pumping) return;
   pumping = true;
   try {
+    // 先把上一轮没送出去的结果补上（哪怕这次 poll 还没开始）
+    await flushPendingResult();
     const { active, state } = await chrome.storage.local.get(['active', 'state']);
     // 桥接恢复后，别让"等待本机桥接：…"这条过期错误一直挂在状态里（排查时会被误导）
     if (!active && /^等待本机桥接/.test(String(state || ''))) await setState('已连接，等待任务');
@@ -158,13 +188,27 @@ async function pump() {
     }
 
     if (poll.task && !active) {
-      const tab = await ensureTab();
       const job = { id: poll.task.id, lease: poll.task.lease, prompt: poll.task.prompt, timeoutMs: poll.task.timeoutMs };
+      // 一级确认：**立刻**告诉 broker「我收到了」，赶在找标签页/自愈重载之前。
+      // 这样"页面正在加载"这段合法的慢就不会被误判成丢件而重发（重发意味着同一提示词
+      // 有被提交两次的风险）。真正的"接手"仍由内容脚本的第一份进度证明——两层缺一不可。
+      await api('/ext/progress', {
+        taskId: job.id, lease: job.lease, stage: 'receipt',
+        phase: '扩展已收到任务，正在准备标签页',
+      }).catch(() => { /* 确认失败不影响正事：真正的接手进度还会再报一次 */ });
+      const tab = await ensureTab();
       // 先记"已派发"，再让它提交：任何中途重载都不会导致重复提问
       await chrome.storage.local.set({ active: { ...job, tabId: tab.id, dispatched: true, startedAt: Date.now() } });
       const health = await ensureContentScript(tab.id);
-      if (!health?.ready) {
-        await fail({ ...job }, health ? '专用标签页还没准备好（可能未登录 chat.deepseek.com）' : '专用标签页没有响应扩展（已在安装后重载过一次仍无应答，请确认该页面能正常打开）', 'WEB_PAGE_NOT_READY');
+      // 输入框要等页面渲染完才出现（尤其扩展刚重载、自愈又把页面重载了一次的时候）。
+      // 早先只查一次就判死 —— 实测报成"未登录"，其实只是页面还在加载。
+      const ready = health?.ready ? health : await waitForReady(tab.id);
+      if (ready?.isSignIn) {
+        await fail({ ...job }, `扩展选中的标签页停在登录页（${String(ready.href || '').slice(0, 60)}）——请在**已登录**的那个 chat.deepseek.com 标签页上重试，或把其他 DeepSeek 标签页关掉只留一个`, 'WEB_SIGN_IN_PAGE');
+        return;
+      }
+      if (!ready?.ready) {
+        await fail({ ...job }, ready ? '专用标签页还没准备好（可能未登录 chat.deepseek.com，或页面还在加载）' : '专用标签页没有响应扩展（已在安装后重载过一次仍无应答，请确认该页面能正常打开）', 'WEB_PAGE_NOT_READY');
         return;
       }
       const sent = await ask(tab.id, { type: 'run', job });
@@ -203,6 +247,24 @@ async function pump() {
   }
 }
 
+/** 把结果回传给 broker；**先落盘再回传**，成功才清除。
+ *  为什么：服务工作线程随时可能被浏览器回收，一旦"结果"这一跳丢了，用户会白等到超时
+ *  （实测：答复 5 秒就读到了，结果 99 秒后才送到）。落盘之后每次 poll 都会补发。 */
+async function flushPendingResult() {
+  const { pendingResult } = await chrome.storage.local.get('pendingResult');
+  if (!pendingResult) return true;
+  const res = await api('/ext/result', pendingResult).catch(() => null);
+  if (res && res.ok !== false) {
+    const waited = Date.now() - (pendingResult.firstAt || Date.now());
+    if (waited > 3000) await setState(`结果延迟 ${Math.round(waited / 1000)} 秒后已补发`);
+    await chrome.storage.local.remove(['pendingResult', 'active']);
+    return true;
+  }
+  // broker 说这个任务已经不在它手里（过期/已结束）→ 丢弃，别无限补发
+  if (res && res.stale) { await chrome.storage.local.remove(['pendingResult', 'active']); return true; }
+  return false;   // 网络/服务不可用 → 留着，下一次唤醒再试
+}
+
 /** 页面驱动上报的进度与结果 → 转成 broker 的接口 */
 async function forward(message) {
   const { active } = await chrome.storage.local.get('active');
@@ -214,11 +276,19 @@ async function forward(message) {
     return { ok: true };
   }
   if (message.type === 'result') {
-    await api('/ext/result', {
-      taskId: active.id, lease: active.lease, ok: true, text: message.text, metrics: { ...(message.metrics || {}), reasoning: (message.reasoning || '').length },
-    }).catch(() => {});
-    await chrome.storage.local.remove('active');
-    await setState('已完成，等待下一轮');
+    // ① 先落盘：结果一旦读到就不能再丢（丢了用户只能白等到超时）
+    await chrome.storage.local.set({
+      pendingResult: {
+        taskId: active.id, lease: active.lease, ok: true,
+        text: message.text,
+        metrics: { ...(message.metrics || {}), reasoning: (message.reasoning || '').length },
+        firstAt: Date.now(),
+      },
+    });
+    // ② 立即尝试回传；失败就留在盘上，由下一次 poll（每 1.5 秒一次）补发
+    const sent = await flushPendingResult();
+    if (sent) await setState('已完成，等待下一轮');
+    else await setState('结果已拿到，正在重试回传');
     return { ok: true };
   }
   if (message.type === 'error') {

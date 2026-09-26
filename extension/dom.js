@@ -15,8 +15,16 @@
 
 (() => {
   const SELECTORS = {
-    // 助手消息行：优先语义属性，退化到 DeepSeek 的 markdown 容器
-    rows: ['[data-message-role="assistant"]', '[data-role="assistant"]', '.ds-markdown'],
+    // 助手消息行：优先语义属性，退化到 DeepSeek 的 markdown 容器。
+    // 注意顺序：**先具体后宽泛**。最后两个是兜底——实测"全新会话"里前面几个都可能一个都不命中，
+    // 于是读到 0 字（现场只能靠 diagnose() 报出来的命中数定位）。
+    rows: [
+      '[data-message-role="assistant"]',
+      '[data-role="assistant"]',
+      '.ds-markdown',
+      '[class*="markdown"]',
+      '[class*="assistant"]',
+    ],
     // 思考过程容器：取答复文本时必须排除，否则"思考"里的 JSON 会污染解析
     think: ['.ds-think-content', '[class*="thinking"]', '[data-role="thinking"]', '[class*="think-content"]'],
     composer: ['textarea'],
@@ -25,7 +33,23 @@
     sendButton: ['[data-testid="send-button"]', 'button[type="submit"]', 'div[role="button"][aria-label*="发送"]'],
   };
 
-  const all = (doc, selector) => { try { return [...doc.querySelectorAll(selector)]; } catch { return []; } };
+  const all = (doc, selector) => deepQueryAll(doc, selector);
+
+  /**
+   * 递归查询，**穿过 Shadow DOM**。
+   * 为什么需要：`querySelectorAll` 不会进入 shadow root，`textContent` 也不包含 shadow 子树。
+   * 若站点把聊天区渲染在 web component 里，表现就是"用户看得见内容，扩展却一个选择器都命中不了、
+   * 文本长度为 0"——正是实测遇到的那种现象。深度限制 6 层、每层最多 200 个宿主，避免病态页面拖死。
+   * 普通页面（没有 shadowRoot）行为与直接 querySelectorAll 完全一致。
+   */
+  function deepQueryAll(root, selector, out = [], depth = 0) {
+    if (!root || depth > 6) return out;
+    try { for (const el of root.querySelectorAll(selector)) out.push(el); } catch { /* ignore */ }
+    let hosts = [];
+    try { hosts = [...root.querySelectorAll('*')].filter((el) => el.shadowRoot).slice(0, 200); } catch { hosts = []; }
+    for (const host of hosts) deepQueryAll(host.shadowRoot, selector, out, depth + 1);
+    return out;
+  }
 
   function isVisible(el) {
     if (!el) return false;
@@ -75,12 +99,22 @@
     return [];
   }
 
-  /** 取一段文本，排除思考容器与代码块之外的噪音；代码块内容要保留（答复本身可能是 JSON 围栏） */
+  /** 取一段文本，排除思考容器；代码块内容要保留（答复本身可能是 JSON 围栏） */
   function textOf(el, { keepCode = true } = {}) {
     if (!el) return '';
     const clone = cloneWithoutThink(el);
     let text = '';
-    try { text = clone.innerText ?? clone.textContent ?? ''; } catch { text = ''; }
+    try {
+      if (clone === el) {
+        // 没克隆成功（拿到的是活节点）→ innerText 才可靠
+        text = el.innerText ?? el.textContent ?? '';
+      } else {
+        // **必须用 textContent**：clone 是脱离文档的节点，Chromium 对脱离文档节点的 innerText
+        // 返回**空串**（是空串而不是 undefined，所以 `??` 兜不住）。实测表现：答复文本永远为空、
+        // 一直停在"正在确认是否有答复"直到 120 秒超时。textContent 不依赖渲染，脱离文档也能读。
+        text = clone.textContent ?? '';
+      }
+    } catch { text = ''; }
     return keepCode ? String(text) : String(text).replace(/```[\s\S]*?```/g, '');
   }
 
@@ -197,8 +231,58 @@
     return '网页已生成完毕，正在回传';
   }
 
+  /** 这个文档是不是登录/注册页（同一个域名，所以光靠 URL 匹配区分不出来） */
+  function isSignInPage(doc) {
+    try {
+      const href = String(doc.location?.href || '');
+      if (/sign[_-]?in|login|register/i.test(href)) return true;
+      const text = String(doc.body?.textContent || '').slice(0, 3000);
+      // 登录页的典型特征：有"登录/注册"文案，但没有聊天容器
+      if (/登录|注册|Sign in|Log in/i.test(text) && doc.querySelectorAll('[class*="markdown"]').length === 0) return true;
+      return false;
+    } catch { return false; }
+  }
+
+  /**
+   * 现场诊断：读不到答复时，把"页面上到底有什么"压缩成一行带回去。
+   * 为什么需要：只有"命中 0 行"这一句时完全无法定位（是选择器不对？页面没渲染？还在加载？
+   * 还是——**驱动的根本不是用户在看的那一个标签页**）。URL 与标题必须放最前面：
+   * 实测就是靠它才发现扩展在驱动另一个停在登录页的标签页。
+   */
+  function diagnose(doc) {
+    const candidates = ['[data-message-role]', '[data-role]', '.ds-markdown', '[class*="markdown"]', '[class*="message"]', '[class*="assistant"]', 'main', 'article'];
+    const counts = candidates.map((sel) => {
+      try { return sel + '=' + doc.querySelectorAll(sel).length; } catch { return sel + '=?'; }
+    }).join(' ');
+    let ready = '?';
+    try { ready = doc.readyState || '?'; } catch { /* ignore */ }
+    let where = '?';
+    try { where = String(doc.location?.href || '?').slice(0, 80) + ' | ' + String(doc.title || '').slice(0, 24); } catch { /* ignore */ }
+    // 结构性事实（回答"为什么明明有内容却一个选择器都命中不了"）：
+    //   textLen —— body 文本长度。若接近 0 而用户看得见内容 → 内容在 Shadow DOM 里
+    //             （textContent 不包含 shadow 子树，querySelectorAll 也穿不透它）
+    //   shadowRoots —— 有多少元素挂了 shadowRoot，直接印证上面那条
+    //   divs / frames —— 页面规模与 iframe 数（内容可能在 iframe 里，而内容脚本只在顶层）
+    //   classes —— 真实类名的前几个（若像 _a1b2c3 这种哈希名，就知道不能按类名写选择器）
+    let textLen = '?', shadowRoots = '?', divs = '?', frames = '?', classes = '?';
+    try {
+      textLen = String((doc.body?.textContent || '').length);
+      const all = [...doc.querySelectorAll('*')].slice(0, 4000);
+      shadowRoots = String(all.filter((el) => el.shadowRoot).length);
+      divs = String(all.filter((el) => String(el.tagName).toLowerCase() === 'div').length);
+      frames = String(doc.querySelectorAll('iframe').length);
+      const names = new Set();
+      for (const el of all) { for (const c of String(el.className || '').split(/\s+/)) { if (c && names.size < 12) names.add(c.slice(0, 24)); } }
+      classes = [...names].join(',');
+    } catch { /* ignore */ }
+    // 穿透 shadow 后的命中数：与上面的 counts 对照，就能区分"选择器不对"与"内容在 Shadow DOM 里"
+    let deepHits = '?';
+    try { deepHits = String(deepQueryAll(doc, '[class*="markdown"], .ds-markdown, [data-message-role], article').length); } catch { /* ignore */ }
+    return `[诊断 url=${where} 登录页=${isSignInPage(doc) ? '是' : '否'} ${counts} 穿透shadow后=${deepHits} readyState=${ready} body文本长度=${textLen} 有shadowRoot的元素=${shadowRoots} div数=${divs} iframe数=${frames} 类名样本=${classes}]`;
+  }
+
   globalThis.DSHOwnDom = {
     SELECTORS, isVisible, findComposer, findStop, findSend, rows, textOf, reasoningOf,
-    captureBaseline, scan, completeJson, acceptDelay, stableEnough, pollDelay, phaseOf,
+    captureBaseline, scan, completeJson, acceptDelay, stableEnough, pollDelay, phaseOf, diagnose, isSignInPage,
   };
 })();

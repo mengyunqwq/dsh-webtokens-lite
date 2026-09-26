@@ -13,10 +13,13 @@ let pass = 0, fail = 0;
 const check = (name, ok, extra = '') => { if (ok) { pass++; console.log('  ✓ ' + name + (extra ? '   ' + extra : '')); } else { fail++; console.log('  ✗ ' + name + (extra ? '   ' + extra : '')); } };
 
 /* ---------- 假 DOM：只实现 dom.js 用到的那点接口 ---------- */
-function makeEl({ text = '', matches = [], children = [], hidden = false, disabled = false, readOnly = false, value = '' } = {}) {
+function makeEl({ text = '', matches = [], children = [], hidden = false, disabled = false, readOnly = false, value = '', detached = false } = {}) {
   const node = {
     textContent: text,
-    innerText: text,
+    // 模拟 Chromium 的真实行为：**脱离文档的节点 innerText 返回空串**（不是 undefined，
+    // 所以 `?? textContent` 兜不住）。克隆出来的节点都标记 detached=true —— 这样
+    // "用 innerText 读克隆节点"的写法会读到空，正好复现真机那个 bug（答复文本永远为空）。
+    innerText: detached ? '' : text,
     children,
     value,
     disabled,
@@ -35,7 +38,8 @@ function makeEl({ text = '', matches = [], children = [], hidden = false, disabl
       return out;
     },
     cloneNode() {
-      const copy = makeEl({ text, matches, hidden, disabled, readOnly, value });
+      // detached: true —— 克隆节点脱离文档，innerText 为空（模拟 Chromium）
+      const copy = makeEl({ text, matches, hidden, disabled, readOnly, value, detached: true });
       copy.children = (children || []).map((c) => { const cc = c.cloneNode(); cc.parent = copy; return cc; });
       return copy;
     },
@@ -122,8 +126,27 @@ console.log('\n=== 4) 基线扫描：只认新答复，且排除"思考"文本 =
   check('于是能被判定为"完整 JSON"→ 800ms 收工', D.completeJson(snap.text) === true && D.acceptDelay(snap.text) === 800);
 }
 
-console.log('\n=== 5) 状态行文案 ===');
-check('生成中且已有文本 → 说明正在生成', D.phaseOf({ text: 'abc', generating: true, sent: true }) === '网页正在生成回复');
+console.log('\n=== 4b) 读文本必须用 textContent（脱离文档的克隆节点 innerText 为空）===');
+{
+  const withThink = row('答复正文', [think('思考内容')]);
+  check('能读到答复正文（真机曾在这里读成空 → 一直停在"正在确认是否有答复"直到超时）', D.textOf(withThink).includes('答复正文'), JSON.stringify(D.textOf(withThink)));
+  check('思考子树的内容仍被排除', !D.textOf(withThink).includes('思考内容'));
+  check('整段扫描也能拿到文本', D.scan(doc([withThink]), { count: 0, lastText: '' }).text.includes('答复正文'));
+  check('代码块内容保留（JSON 就在里面）', D.textOf(row('```json\n{"a":1}\n```')).includes('{"a":1}'));
+}
+
+console.log('\n=== 4c) 现场诊断（读不到答复时用来自证"页面到底有什么"）===');
+{
+  const d = doc([row('已有回答')]);
+  const line = D.diagnose(d);
+  check('诊断行含各候选选择器的命中数', /\[data-message-role\]=/.test(line) && /\.ds-markdown=/.test(line), line.slice(0, 90));
+  check('诊断行含 readyState、页面 URL 与是否登录页', /readyState=/.test(line) && /url=/.test(line) && /登录页=/.test(line), line.slice(0, 120));
+  check('命中数确实反映 DOM（.ds-markdown 命中 1）', /\.ds-markdown=1/.test(line));
+  check('能识别登录页（同域名，光靠 URL 匹配区分不出来）', D.isSignInPage({ location: { href: 'https://chat.deepseek.com/sign_in' }, querySelectorAll: () => [], body: { textContent: '登录 / 注册' } }) === true);
+  check('正常聊天页不误判为登录页', D.isSignInPage({ location: { href: 'https://chat.deepseek.com/a/chat/s/xx' }, querySelectorAll: () => [1], body: { textContent: '登录' } }) === false);
+}
+
+console.log('\n=== 5) 状态行文案 ===');check('生成中且已有文本 → 说明正在生成', D.phaseOf({ text: 'abc', generating: true, sent: true }) === '网页正在生成回复');
 check('只有思考 → 说明正在思考', D.phaseOf({ text: '', reasoning: '想', generating: true, sent: true }) === '网页正在思考');
 check('还没确认发送 → 说明在提交', D.phaseOf({ text: '', reasoning: '', generating: false, sent: false }) === '正在把提示词提交到网页');
 check('已停止且有文本 → 说明在回传', D.phaseOf({ text: 'abc', generating: false, sent: true }) === '网页已生成完毕，正在回传');
