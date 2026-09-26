@@ -1,160 +1,116 @@
 # dsh-webtokens-lite
 
-把**你已经登录的 DeepSeek 网页**变成你自建 LLM 中转站里的一个模型 —— **不需要 API Key，消耗的是你网页账号的额度**。
+把**你自己电脑上的 DeepSeek 网页**接成中转站（或任何 OpenAI 兼容调用方）的一个上游：
+请求投给这台电脑，由这台电脑自己的浏览器、自己的 DeepSeek 账号作答。
+**额度、内容、历史都留在你自己的账号里**，中转站按 0 token / 0 花费记账。
+
+实现是**自研的**（这个仓库自己就有全部代码：扩展 + broker + 连接器）：
 
 ```
-你的应用（任何 OpenAI SDK）
-   │  relay key
+调用方（中转站 / DSH / 任何 OpenAI 兼容程序）
+   │  OpenAI 请求
    ▼
-你的中转站 ──► 本机连接器（本仓库）──► 本机桥接 127.0.0.1:3081
-                                            │
-                                            ▼
-                                    你自己的浏览器扩展 ──► chat.deepseek.com（你已登录的账号）
+连接器（本仓库，跑在这台电脑上）──► 本机 broker（127.0.0.1:3081）
+   │  长轮询中转站取任务                    ▲
+   ▼                                      │ 扩展主动轮询取任务
+中转站                                     │
+                                    浏览器扩展（本仓库 extension/）
+                                           │
+                                           ▼
+                                  你自己已登录的 chat.deepseek.com
 ```
 
-**特点**
+- **不需要 API Key**，凭据是这台电脑的配对令牌；
+- **不拉任何上游第三方代码、不做哈希校验、不需要 `npm install`**（零依赖，只要 Node ≥ 22）；
+- 一轮问答实测约 **2~4 秒**（网页停止生成即回传，不再固定等 5 秒）。
 
-- **工具调用（function calling）可用**：网页返回的工具请求会被逐条校验参数后再回传，支持"调用 → 拿到结果 → 继续"的往返。
-- **不需要 API Key**，不绕过登录，也不解锁你账号没有的模型。
-- **本仓库不含任何上游第三方代码**（见下面「关于上游」），按固定 tag 拉取并逐文件 SHA-256 校验。
+## 一、一条命令安装（推荐）
 
-**明确的边界**（都是事实，不是免责声明）
+```powershell
+& ([scriptblock]::Create((irm <你的中转站>/agent/runner/webbridge.ps1))) -Pair <配对码> -Server <你的中转站>
+```
 
-| 项目 | 说明 |
+- `<配对码>`：形如 `ABCD-EFGH`，在**中转站控制台**「＋ 添加我的电脑」里生成（只能人工拿）。
+  暂时没有就先 `-Pair NONE`：只装不配对，之后再补。
+- 脚本**幂等**：重复运行只会补齐缺失的部分；**不需要管理员权限，也不需要预装 Node**（自带便携版）。
+- 它做的事：装 Node → 从中转站下载客户端 → `node setup.mjs --bridge=own` 铺出扩展目录
+  `chrome/` 并生成本机配对密钥 → 配对中转站 → 写开机自启 → 打印接下来两件只能人工做的事。
+
+### 装完只剩两件人工的事
+
+1. **把扩展装进浏览器**：打开 `edge://extensions`（或 `chrome://extensions`）→ 开「开发人员模式」
+   → 点「加载解压缩的扩展」→ 选安装目录里的 **`chrome`**；
+   卡片名应为 **DeepSeek 网页桥接（自研）**（版本号以安装器最后打印的那行为准）。
+2. **在那个浏览器里登录** <https://chat.deepseek.com/> 并保持登录。
+   扩展会自己开一个**专用会话标签页**，不要在那个会话里手动输入或删消息。
+
+> 为什么这两步不能自动化：Chromium 要求人点（`--load-extension` 在新版已移除，
+> `edge://` 特权地址也无法从命令行打开）。安装器会**自动打开扩展页并把目录复制到剪贴板**。
+
+### 装完之后，日常只需要这三个免路径入口
+
+安装器会在**你选定的安装目录**里生成三个小命令（用 `%~dp0` 自己定位，装到哪都能用）：
+
+| 双击 | 作用 |
 |---|---|
-| 用量统计 | 网页端**不提供真实 token 用量**，本方案也拒绝伪造 → 中转站里这个模型记 **0 token / 0 花费** |
-| 采样参数 | 网页端没有 `temperature` / `stop`，传了会被忽略 |
-| 并发 | 一个浏览器同时只处理一轮，多个请求会排队 |
-| 图片/多模态 | 仅文本；图片块会被省略 |
-| 前提 | 这台电脑要开着、浏览器要开着、扩展要加载、DeepSeek 要保持登录 |
-| 超时 | 本机等网页 240s；中转站侧投递预算需设为 300s（见 [docs/relay-side.md](docs/relay-side.md)） |
+| `doctor.cmd` | 自检：Node / 密钥 / 扩展目录 / 桥接是否在跑 / 是否已配对 |
+| `status.cmd` | 看桥接与扩展的连接状态 |
+| `stop.cmd` | 停掉本机桥接 |
 
-## 一键安装（推荐）
+**更新**：安装器会拿**整包指纹**与服务器对比，发现服务器更新了就自动覆盖式升级
+（**配对令牌不会被覆盖**），并提示你去扩展页点一次「重新加载」。
+所以升级只需要**重跑同一条安装命令**，不会掉配对、也不需要删目录重装。
 
-如果你的中转站托管了安装脚本（见 [docs/relay-side.md](docs/relay-side.md) 的「托管一键安装器」），
-在 Windows PowerShell 里**一行命令**即可装完全部（含便携 Node，不需要管理员、不需要预装任何东西）：
-
-```powershell
-irm https://<你的中转站>/agent/runner/webbridge.ps1 | iex
-```
-
-无人值守（把配对码当参数传，适合脚本或 AI 代跑）：
-
-```powershell
-& ([scriptblock]::Create((irm https://<你的中转站>/agent/runner/webbridge.ps1))) -Pair ABCD-EFGH
-```
-
-安装器会自动：装便携 Node → 下客户端 → **按固定 tag 拉上游并逐文件 SHA-256 校验** → 生成配对密钥
-→ 铺扩展目录 → 配对中转站 → 写开机自启 → 打开浏览器并把扩展目录放进剪贴板。
-
-**装完只剩两件必须人工做的事**（脚本会大字标出）：① 浏览器开发者模式加载解压扩展；② 登录 DeepSeek。
-
-> **给 AI 用的安装协议**：[docs/agent-install.md](docs/agent-install.md)（步骤、参数、输出约定、
-> 人工交接、验证、故障处理、卸载；也可直接 `irm <你的中转站>/agent/runner/webbridge.md` 取到）。
-
-## 环境要求
-
-- **Node.js 22 或更高**
-- 一个 **Chromium 系浏览器**（Chrome / Edge / Brave…）
-- 一个**已登录**的 DeepSeek 网页账号
-
-## 安装
+## 二、从源码跑（开发用）
 
 ```bash
 git clone <本仓库地址> dsh-webtokens-lite
 cd dsh-webtokens-lite
-npm install
-npm run setup
+node setup.mjs --bridge=own          # 铺出 chrome/ + 生成 config.json（本机配对密钥）
+node setup.mjs --doctor              # 自检
+npm start                            # 起本机 broker(3081) + 中转站连接器
+node setup.mjs --pair ABCD-EFGH --server https://你的中转站   # 配对（可选）
 ```
 
-`npm run setup` 会做四件事：
+- `--bridge=own`：用本仓库的自研实现（安装器默认就走它）。
+  `--bridge=upstream` 是历史遗留的另一条实现，**不建议**（要联网拉上游第三方代码）。
+- 两种写法都支持：`--bridge=own` 与 `--bridge own`；解析不出来会**明确报错**，不会静默换实现。
 
-1. 按固定 tag 拉取上游桥接插件，**逐文件校验 SHA-256**（43 个基线文件全部一致才继续）；
-2. 生成本机配对密钥（`config.json`，**不要外传、不要提交**）；
-3. 铺出扩展目录 `chrome/`（路径会自动复制到剪贴板）；
-4. 打印接下来那两件**只能人工做**的事。
+## 三、安装器可用参数
 
-> 如果要把本机接入中转站，在控制台「＋ 添加我的电脑」拿到配对码后：
-> ```bash
-> npm run setup -- --pair ABCD-EFGH --server https://你的中转站地址
-> ```
+| 参数 | 说明 |
+|---|---|
+| `-Pair <code>` / `-Pair NONE` | 配对码；`NONE` = 只装不配对 |
+| `-Server <url>` | 中转站地址 |
+| `-Root <dir>` | 安装目录（默认 `%LOCALAPPDATA%\dsh-webtokens-lite`，**每台机器可以不同**） |
+| `-Port <n>` | 本机桥接端口（默认 3081；**仅测试用**，扩展侧写死 3081） |
+| `-NoAutostart` / `-NoStart` / `-NoOpen` | 不写自启 / 装完不启动 / 不自动开浏览器 |
+| `-Doctor` | 只自检 |
+| `-Force` | 强制重新下载客户端（版本指纹没差异时也能强制重装） |
 
-## 两件人工的事（无法自动化）
+## 四、边界与代价（请如实告诉你的使用者）
 
-**① 把扩展装进浏览器**
+- 用的是**这台电脑自己的** DeepSeek 网页额度；中转站记 0 token / 0 花费；
+- 一次回答实测约 **2~4 秒**；网页端**同一时刻只跑一个任务**，排队过深会被拒绝（429）；
+- 多步 Agent 任务会连续占用这条通道，容易撞 429（在中转站多配一台电脑可提高并发）；
+- 发送的内容会出现在**这台电脑自己的** DeepSeek 网页会话历史里，并发往 DeepSeek 服务器；
+- 运行期间需要：这台电脑开机、浏览器开着、DeepSeek 保持登录。
 
-打开 `edge://extensions`（或 `chrome://extensions`）→ 打开**开发人员模式** → 点**加载解压缩的扩展** → 选择：
+## 五、卸载
 
+```powershell
+# 1) 先停桥接（安装目录里双击 stop.cmd，或）
+Get-NetTCPConnection -LocalPort 3081 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+# 2) 删掉你安装时用的那个目录（默认 %LOCALAPPDATA%\dsh-webtokens-lite；传过 -Root 的按那个来）
+Remove-Item -Recurse -Force "<你的安装目录>"
+# 3) 删自启快捷方式
+Remove-Item (Join-Path ([Environment]::GetFolderPath('Startup')) 'dsh-webtokens-lite.lnk') -ErrorAction SilentlyContinue
 ```
-<本仓库目录>/chrome
-```
 
-确认卡片名称为 **DeepSeek Harness 网页桥接**、版本 **0.2.19**。
+再到 `edge://extensions` 里移除那个扩展，并在中转站控制台删掉这台设备。
 
-> - 同一个浏览器配置里**只装一份**；也**不要**去加载 `vendor/.../extension`，那个目录缺少配对文件。
-> - 为什么不能自动化：`--load-extension` 在新版 Chromium 已被移除，且 `edge://` 特权地址无法从命令行打开（实测）。这一步只能人来点。
-
-**② 在那个浏览器里登录 DeepSeek**
-
-打开 <https://chat.deepseek.com/> 并登录，保持登录状态。扩展会自己开一个**专用会话标签页**：
-
-> ⚠️ **不要**在那个专用会话里手动输入或删除消息 —— 那是桥接的工作台，插一脚就会打乱它。
-
-## 启动
+## 六、自证
 
 ```bash
-npm start          # 或双击 start.cmd / ./start.sh
-```
-
-- 同时拉起**本机桥接（127.0.0.1:3081）**和**中转站连接器**，一个窗口，Ctrl+C 一起退出。
-- 启动时会提示扩展是否连上；之后每 5 分钟一次心跳。
-
-自检：
-
-```bash
-npm run doctor
-```
-
-会检查：Node 版本、上游副本哈希、密钥与扩展目录是否一致、桥接是否在跑、扩展是否连接、是否已配对中转站。
-
-## 排障
-
-见 [docs/troubleshooting.md](docs/troubleshooting.md)。最常见的三种：
-
-| 现象 | 原因 | 处理 |
-|---|---|---|
-| 调用一直不返回，之后超时失败 | 专用标签页被浏览器**睡眠/资源节省**挂起成白屏 | 关掉「睡眠标签页」；或把 `chat.deepseek.com` 加入永不休眠；手动刷新那个标签页 |
-| 提示扩展未连接 | 扩展没加载 / 浏览器没开 / 加载错了目录 | 看 `npm run doctor` 的输出 |
-| 端口 3081 被占用 | 本机已经跑着另一套桥接（例如 DSH 的插件） | 一个端口只能跑一套，二选一 |
-
-> 进阶：想看桥接内部阶段，可读上游审计日志（需先建目录，上游自己不会建）：
-> `vendor/dsh-web-bridge/plugins/dsh-web-bridge` 的事件由宿主写入；本 lite 包在 `start.mjs` 里只打关键事件。
-
-## 关于上游（重要）
-
-- 上游项目：[`xinyuquan985-coder/DSH-webtokens`](https://github.com/xinyuquan985-coder/DSH-webtokens)
-- 它**没有声明任何开源许可证**（无 LICENSE 文件、`package.json` 无 `license` 字段、扩展 manifest 也无声明）。
-  **没有许可证 = 默认保留所有权利**，因此本仓库**不再分发**其任何代码。
-- 本仓库的做法是：`setup.mjs` 在你自己的机器上按固定 tag（`v0.2.15-deepseek`）下载，
-  并用上游自带的 `SOURCE.json` 对 43 个基线文件逐个校验 SHA-256。校验不通过就中止。
-- 本仓库的 `LICENSE`（MIT）**只覆盖本仓库自己的代码**，不覆盖上游代码。上游代码的著作权归属其原作者。
-- 如果你是该上游作者并希望调整署名或许可方式，欢迎开 issue。
-
-## 目录结构
-
-```
-setup.mjs            一次性初始化（拉取+校验+密钥+扩展目录+可选配对）
-start.mjs            启动本机桥接 + 连接器
-start.cmd / start.sh 双击启动
-lib/
-  config.mjs         路径与配置、超时分层
-  upstream.mjs       按引用拉取上游 + SHA256 校验
-  host.mjs           拉起本机桥接（复用上游 broker.js）
-  bridge.mjs         OpenAI 请求 ⇄ 网页桥接协议（复用上游 protocol.js/remote.js）
-  agent.mjs          配对中转站 + 长轮询 + 处理 web_prompt
-docs/
-  relay-side.md      中转站侧怎么接（上游登记、默认设备、投递契约）
-  troubleshooting.md 常见故障与处理
-vendor/              运行时拉取（.gitignore，不入库）
-chrome/              运行时生成（.gitignore，不入库）
+npm test        # 166 项：协议解析 / broker（含 OpenAI 兼容面）/ 扩展逻辑 / 自研调用 / 参数解析
 ```
