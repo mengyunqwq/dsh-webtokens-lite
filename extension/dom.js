@@ -215,10 +215,23 @@
     return '网页已生成完毕，正在回传';
   }
 
+  /** 这个文档是不是登录/注册页（同一个域名，所以光靠 URL 匹配区分不出来） */
+  function isSignInPage(doc) {
+    try {
+      const href = String(doc.location?.href || '');
+      if (/sign[_-]?in|login|register/i.test(href)) return true;
+      const text = String(doc.body?.textContent || '').slice(0, 3000);
+      // 登录页的典型特征：有"登录/注册"文案，但没有聊天容器
+      if (/登录|注册|Sign in|Log in/i.test(text) && doc.querySelectorAll('[class*="markdown"]').length === 0) return true;
+      return false;
+    } catch { return false; }
+  }
+
   /**
    * 现场诊断：读不到答复时，把"页面上到底有什么"压缩成一行带回去。
-   * 为什么需要：只有"命中 0 行"这一句时完全无法定位（是选择器不对？页面没渲染？还在加载？）。
-   * 这一行给出各候选选择器的命中数 + 页面状态，一次就能看出该把选择器改成什么。
+   * 为什么需要：只有"命中 0 行"这一句时完全无法定位（是选择器不对？页面没渲染？还在加载？
+   * 还是——**驱动的根本不是用户在看的那一个标签页**）。URL 与标题必须放最前面：
+   * 实测就是靠它才发现扩展在驱动另一个停在登录页的标签页。
    */
   function diagnose(doc) {
     const candidates = ['[data-message-role]', '[data-role]', '.ds-markdown', '[class*="markdown"]', '[class*="message"]', '[class*="assistant"]', 'main', 'article'];
@@ -227,13 +240,13 @@
     }).join(' ');
     let ready = '?';
     try { ready = doc.readyState || '?'; } catch { /* ignore */ }
-    let mainChildren = '?';
-    try { mainChildren = String((doc.querySelector('main')?.children?.length) ?? '?'); } catch { /* ignore */ }
-    return `[诊断 ${counts} readyState=${ready} main子节点=${mainChildren}]`;
+    let where = '?';
+    try { where = String(doc.location?.href || '?').slice(0, 90) + ' | ' + String(doc.title || '').slice(0, 30); } catch { /* ignore */ }
+    return `[诊断 url=${where} 登录页=${isSignInPage(doc) ? '是' : '否'} ${counts} readyState=${ready}]`;
   }
 
   globalThis.DSHOwnDom = {
     SELECTORS, isVisible, findComposer, findStop, findSend, rows, textOf, reasoningOf,
-    captureBaseline, scan, completeJson, acceptDelay, stableEnough, pollDelay, phaseOf, diagnose,
+    captureBaseline, scan, completeJson, acceptDelay, stableEnough, pollDelay, phaseOf, diagnose, isSignInPage,
   };
 })();

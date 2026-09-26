@@ -8,7 +8,7 @@
 //   · 取消（broker 回 cancelled 或用户点停止）会传给页面驱动，让它点网页的停止按钮。
 
 const DEFAULTS = { base: 'http://127.0.0.1:3081' };
-const VERSION = '1.0.6';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
+const VERSION = '1.0.7';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
 let pumping = false;
 
 const configPromise = (async () => {
@@ -53,14 +53,31 @@ async function setState(state, patch = {}) {
 /** 找到（或打开）一个 DeepSeek 标签页 */
 async function ensureTab() {
   const tabs = await chrome.tabs.query({ url: 'https://chat.deepseek.com/*' });
+  // 按"上次选定 → 逐个问健康 → 跳过登录页"来挑一个**真正可用**的标签页。
+  // 为什么不能只取第一个：同一域名下可能有多个标签页，其中一个停在登录页或已被丢弃。
+  // 实测踩到：扩展一直在驱动一个停在登录页的旧标签页，而用户看的是另一个能正常回答的
+  // 标签页 —— 于是"页面上明明有答复，内容脚本却报命中 0 行"。
+  const { bridgeTabId } = await chrome.storage.local.get('bridgeTabId');
+  const ordered = [...tabs].sort((a, b) => (a.id === bridgeTabId ? -1 : b.id === bridgeTabId ? 1 : 0));
+  for (const tab of ordered) {
+    if (/sign[_-]?in|login|register/i.test(String(tab.url || ''))) continue;
+    const health = await ask(tab.id, { type: 'health' });
+    if (health?.ready) {
+      await chrome.storage.local.set({ bridgeTabId: tab.id });
+      try { await chrome.tabs.update(tab.id, { autoDiscardable: false }); } catch { /* ignore */ }
+      return tab;
+    }
+  }
   if (tabs.length) {
-    const tab = tabs[0];
+    const tab = tabs.find((t) => !/sign[_-]?in|login|register/i.test(String(t.url || ''))) || tabs[0];
+    await chrome.storage.local.set({ bridgeTabId: tab.id });
     try { await chrome.tabs.update(tab.id, { autoDiscardable: false }); } catch { /* ignore */ }
     return tab;
   }
   const created = await chrome.tabs.create({ url: 'https://chat.deepseek.com/', active: false });
   try { await chrome.tabs.update(created.id, { autoDiscardable: false }); } catch { /* ignore */ }
   await waitForComplete(created.id);   // 等它加载完，否则后面发消息一定没人应答
+  await chrome.storage.local.set({ bridgeTabId: created.id });
   return created;
 }
 
@@ -186,6 +203,10 @@ async function pump() {
       // 输入框要等页面渲染完才出现（尤其扩展刚重载、自愈又把页面重载了一次的时候）。
       // 早先只查一次就判死 —— 实测报成"未登录"，其实只是页面还在加载。
       const ready = health?.ready ? health : await waitForReady(tab.id);
+      if (ready?.isSignIn) {
+        await fail({ ...job }, `扩展选中的标签页停在登录页（${String(ready.href || '').slice(0, 60)}）——请在**已登录**的那个 chat.deepseek.com 标签页上重试，或把其他 DeepSeek 标签页关掉只留一个`, 'WEB_SIGN_IN_PAGE');
+        return;
+      }
       if (!ready?.ready) {
         await fail({ ...job }, ready ? '专用标签页还没准备好（可能未登录 chat.deepseek.com，或页面还在加载）' : '专用标签页没有响应扩展（已在安装后重载过一次仍无应答，请确认该页面能正常打开）', 'WEB_PAGE_NOT_READY');
         return;

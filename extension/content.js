@@ -11,7 +11,7 @@
 
 (() => {
   const D = globalThis.DSHOwnDom;
-  const VERSION = '1.0.6';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
+  const VERSION = '1.0.7';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let active = null;
 
@@ -144,6 +144,9 @@
         hasDraft: !!String(D.findComposer(document)?.value || '').trim(),
         activeId: active?.id ?? null,
         visibility: document.visibilityState,
+        // 让后台能区分"这个标签页停在登录页"——同域名，光靠 URL 匹配区分不出来
+        isSignIn: D.isSignInPage(document),
+        href: String(location.href || '').slice(0, 120),
       });
       return;
     }
