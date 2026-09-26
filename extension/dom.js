@@ -33,7 +33,23 @@
     sendButton: ['[data-testid="send-button"]', 'button[type="submit"]', 'div[role="button"][aria-label*="发送"]'],
   };
 
-  const all = (doc, selector) => { try { return [...doc.querySelectorAll(selector)]; } catch { return []; } };
+  const all = (doc, selector) => deepQueryAll(doc, selector);
+
+  /**
+   * 递归查询，**穿过 Shadow DOM**。
+   * 为什么需要：`querySelectorAll` 不会进入 shadow root，`textContent` 也不包含 shadow 子树。
+   * 若站点把聊天区渲染在 web component 里，表现就是"用户看得见内容，扩展却一个选择器都命中不了、
+   * 文本长度为 0"——正是实测遇到的那种现象。深度限制 6 层、每层最多 200 个宿主，避免病态页面拖死。
+   * 普通页面（没有 shadowRoot）行为与直接 querySelectorAll 完全一致。
+   */
+  function deepQueryAll(root, selector, out = [], depth = 0) {
+    if (!root || depth > 6) return out;
+    try { for (const el of root.querySelectorAll(selector)) out.push(el); } catch { /* ignore */ }
+    let hosts = [];
+    try { hosts = [...root.querySelectorAll('*')].filter((el) => el.shadowRoot).slice(0, 200); } catch { hosts = []; }
+    for (const host of hosts) deepQueryAll(host.shadowRoot, selector, out, depth + 1);
+    return out;
+  }
 
   function isVisible(el) {
     if (!el) return false;
@@ -259,7 +275,10 @@
       for (const el of all) { for (const c of String(el.className || '').split(/\s+/)) { if (c && names.size < 12) names.add(c.slice(0, 24)); } }
       classes = [...names].join(',');
     } catch { /* ignore */ }
-    return `[诊断 url=${where} 登录页=${isSignInPage(doc) ? '是' : '否'} ${counts} readyState=${ready} body文本长度=${textLen} 有shadowRoot的元素=${shadowRoots} div数=${divs} iframe数=${frames} 类名样本=${classes}]`;
+    // 穿透 shadow 后的命中数：与上面的 counts 对照，就能区分"选择器不对"与"内容在 Shadow DOM 里"
+    let deepHits = '?';
+    try { deepHits = String(deepQueryAll(doc, '[class*="markdown"], .ds-markdown, [data-message-role], article').length); } catch { /* ignore */ }
+    return `[诊断 url=${where} 登录页=${isSignInPage(doc) ? '是' : '否'} ${counts} 穿透shadow后=${deepHits} readyState=${ready} body文本长度=${textLen} 有shadowRoot的元素=${shadowRoots} div数=${divs} iframe数=${frames} 类名样本=${classes}]`;
   }
 
   globalThis.DSHOwnDom = {
