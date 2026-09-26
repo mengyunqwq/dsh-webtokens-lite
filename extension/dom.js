@@ -15,8 +15,16 @@
 
 (() => {
   const SELECTORS = {
-    // 助手消息行：优先语义属性，退化到 DeepSeek 的 markdown 容器
-    rows: ['[data-message-role="assistant"]', '[data-role="assistant"]', '.ds-markdown'],
+    // 助手消息行：优先语义属性，退化到 DeepSeek 的 markdown 容器。
+    // 注意顺序：**先具体后宽泛**。最后两个是兜底——实测"全新会话"里前面几个都可能一个都不命中，
+    // 于是读到 0 字（现场只能靠 diagnose() 报出来的命中数定位）。
+    rows: [
+      '[data-message-role="assistant"]',
+      '[data-role="assistant"]',
+      '.ds-markdown',
+      '[class*="markdown"]',
+      '[class*="assistant"]',
+    ],
     // 思考过程容器：取答复文本时必须排除，否则"思考"里的 JSON 会污染解析
     think: ['.ds-think-content', '[class*="thinking"]', '[data-role="thinking"]', '[class*="think-content"]'],
     composer: ['textarea'],
@@ -207,8 +215,25 @@
     return '网页已生成完毕，正在回传';
   }
 
+  /**
+   * 现场诊断：读不到答复时，把"页面上到底有什么"压缩成一行带回去。
+   * 为什么需要：只有"命中 0 行"这一句时完全无法定位（是选择器不对？页面没渲染？还在加载？）。
+   * 这一行给出各候选选择器的命中数 + 页面状态，一次就能看出该把选择器改成什么。
+   */
+  function diagnose(doc) {
+    const candidates = ['[data-message-role]', '[data-role]', '.ds-markdown', '[class*="markdown"]', '[class*="message"]', '[class*="assistant"]', 'main', 'article'];
+    const counts = candidates.map((sel) => {
+      try { return sel + '=' + doc.querySelectorAll(sel).length; } catch { return sel + '=?'; }
+    }).join(' ');
+    let ready = '?';
+    try { ready = doc.readyState || '?'; } catch { /* ignore */ }
+    let mainChildren = '?';
+    try { mainChildren = String((doc.querySelector('main')?.children?.length) ?? '?'); } catch { /* ignore */ }
+    return `[诊断 ${counts} readyState=${ready} main子节点=${mainChildren}]`;
+  }
+
   globalThis.DSHOwnDom = {
     SELECTORS, isVisible, findComposer, findStop, findSend, rows, textOf, reasoningOf,
-    captureBaseline, scan, completeJson, acceptDelay, stableEnough, pollDelay, phaseOf,
+    captureBaseline, scan, completeJson, acceptDelay, stableEnough, pollDelay, phaseOf, diagnose,
   };
 })();

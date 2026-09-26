@@ -11,7 +11,7 @@
 
 (() => {
   const D = globalThis.DSHOwnDom;
-  const VERSION = '1.0.5';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
+  const VERSION = '1.0.6';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let active = null;
 
@@ -92,7 +92,9 @@
         const phase = D.phaseOf({ text: snap.text, reasoning, generating: snap.generating, sent: confirmed });
         // 停止生成却读不到文本时，把"我到底看到了什么"一起报出来：否则外部只能看到"卡住了"，
         // 无法区分是选择器没命中、页面没渲染完、还是文本在别的容器里（实测就这样白等了 120 秒）。
-        const diag = (confirmed && !snap.generating && !snap.text) ? `（命中 ${snap.rowCount} 行，读到 ${String(snap.text || '').length} 字）` : '';
+        const diag = (confirmed && !snap.generating && !snap.text)
+          ? `（命中 ${snap.rowCount} 行，读到 ${String(snap.text || '').length} 字）${D.diagnose(document)}`
+          : '';
         const phaseLine = phase + diag;
         if (phaseLine !== lastPhase) { lastPhase = phaseLine; report('progress', { phase: phaseLine }); }
         // 而且不再无限等：网页明明停止生成了、却长时间读不到任何文本，就带着现场信息报错。
