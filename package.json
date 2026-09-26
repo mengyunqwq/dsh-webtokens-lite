@@ -11,7 +11,8 @@
   "scripts": {
     "setup": "node setup.mjs",
     "start": "node start.mjs",
-    "doctor": "node setup.mjs --doctor"
+    "doctor": "node setup.mjs --doctor",
+    "test": "node tests/protocol.test.mjs && node tests/broker.test.mjs"
   },
   "dependencies": {
     "ajv": "8.20.0"
