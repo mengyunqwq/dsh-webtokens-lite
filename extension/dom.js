@@ -241,8 +241,25 @@
     let ready = '?';
     try { ready = doc.readyState || '?'; } catch { /* ignore */ }
     let where = '?';
-    try { where = String(doc.location?.href || '?').slice(0, 90) + ' | ' + String(doc.title || '').slice(0, 30); } catch { /* ignore */ }
-    return `[诊断 url=${where} 登录页=${isSignInPage(doc) ? '是' : '否'} ${counts} readyState=${ready}]`;
+    try { where = String(doc.location?.href || '?').slice(0, 80) + ' | ' + String(doc.title || '').slice(0, 24); } catch { /* ignore */ }
+    // 结构性事实（回答"为什么明明有内容却一个选择器都命中不了"）：
+    //   textLen —— body 文本长度。若接近 0 而用户看得见内容 → 内容在 Shadow DOM 里
+    //             （textContent 不包含 shadow 子树，querySelectorAll 也穿不透它）
+    //   shadowRoots —— 有多少元素挂了 shadowRoot，直接印证上面那条
+    //   divs / frames —— 页面规模与 iframe 数（内容可能在 iframe 里，而内容脚本只在顶层）
+    //   classes —— 真实类名的前几个（若像 _a1b2c3 这种哈希名，就知道不能按类名写选择器）
+    let textLen = '?', shadowRoots = '?', divs = '?', frames = '?', classes = '?';
+    try {
+      textLen = String((doc.body?.textContent || '').length);
+      const all = [...doc.querySelectorAll('*')].slice(0, 4000);
+      shadowRoots = String(all.filter((el) => el.shadowRoot).length);
+      divs = String(all.filter((el) => String(el.tagName).toLowerCase() === 'div').length);
+      frames = String(doc.querySelectorAll('iframe').length);
+      const names = new Set();
+      for (const el of all) { for (const c of String(el.className || '').split(/\s+/)) { if (c && names.size < 12) names.add(c.slice(0, 24)); } }
+      classes = [...names].join(',');
+    } catch { /* ignore */ }
+    return `[诊断 url=${where} 登录页=${isSignInPage(doc) ? '是' : '否'} ${counts} readyState=${ready} body文本长度=${textLen} 有shadowRoot的元素=${shadowRoots} div数=${divs} iframe数=${frames} 类名样本=${classes}]`;
   }
 
   globalThis.DSHOwnDom = {
