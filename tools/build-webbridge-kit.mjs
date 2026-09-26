@@ -58,17 +58,30 @@ for (const d of INCLUDE_DIRS) {
   walk(d);
 }
 
-// 2) 版本标记：用户机器上的包是哪一版、哪种实现，一眼能看出来
+// 3) 版本标记：用户机器上的包是哪一版、哪种实现，一眼能看出来
 const manifest = JSON.parse(readFileSync(join(LITE, 'extension', 'manifest.json'), 'utf8'));
+// 整包指纹：对**所有将打包的文件**做一次哈希。只比"扩展版本"是不够的——
+// 万一只改了 broker/protocol（扩展版本没动），安装器的版本对比就发现不了，
+// 用户重跑安装器仍然拿到旧代码（真机就在这类地方吃过亏）。
+const crypto = await import('node:crypto');
+const fingerprint = (() => {
+  const h = crypto.createHash('sha256');
+  for (const rel of [...items].sort()) {
+    h.update(rel.replace(/\\/g, '/'));
+    h.update(readFileSync(join(LITE, rel)));
+  }
+  return h.digest('hex').slice(0, 16);
+})();
 const kit = {
   mode: 'own',
   extensionName: manifest.name,
   extensionVersion: manifest.version,
   kitVersion: JSON.parse(readFileSync(join(LITE, 'package.json'), 'utf8')).version,
+  fingerprint,
   builtAt: new Date().toISOString(),
   note: '自研实现：扩展 + broker + 连接器；不需要上游插件、不需要 npm install',
 };
-log(`整包版本：kit=${kit.kitVersion}  extension=${kit.extensionName} ${kit.extensionVersion}  (mode=${kit.mode})`);
+log(`整包版本：kit=${kit.kitVersion}  extension=${kit.extensionName} ${kit.extensionVersion}  指纹=${fingerprint}  (mode=${kit.mode})`);
 log(`将打包 ${items.length} 个文件：`);
 for (const d of INCLUDE_DIRS) log(`  ${d.padEnd(10)} ${items.filter((i) => i.startsWith(d + '\\')).length} 个`);
 log(`  根文件     ${items.filter((i) => !i.includes('\\')).length} 个`);
@@ -89,6 +102,13 @@ execFileSync('powershell.exe', ['-NoProfile', '-Command',
   `Compress-Archive -Path '${stage}\\*' -DestinationPath '${outZip}' -Force`], { stdio: 'inherit' });
 const size = statSync(outZip).size;
 log(`[OK] 已生成 ${outZip}（${(size / 1024).toFixed(1)}KB）`);
+// 4b) 同时把版本信息单独写一份到包**外面**：安装器要拿它跟本机已装版本对比，
+// 才能发现"服务器上升级了、本机还是老的"（原来只看有没有 setup.mjs，导致重跑安装器毫无变化）。
+try {
+  const sidecar = join(dirname(outZip), 'webbridge-kit.json');
+  writeFileSync(sidecar, JSON.stringify(kit, null, 2) + '\n');
+  log(`[OK] 已写出 ${sidecar}（供安装器做版本对比）`);
+} catch (error) { log(`[WARN] 版本信息写出失败（不影响安装）：${error.message}`); }
 
 // 5) 自证：解压回来逐文件核对（不通过就报错，避免把坏包发出去）
 const verify = join(tmpdir(), 'webbridge-kit-verify');
