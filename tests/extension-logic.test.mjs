@@ -150,6 +150,7 @@ console.log('\n=== 5) 状态行文案 ===');check('生成中且已有文本 → 
 check('只有思考 → 说明正在思考', D.phaseOf({ text: '', reasoning: '想', generating: true, sent: true }) === '网页正在思考');
 check('还没确认发送 → 说明在提交', D.phaseOf({ text: '', reasoning: '', generating: false, sent: false }) === '正在把提示词提交到网页');
 check('已停止且有文本 → 说明在回传', D.phaseOf({ text: 'abc', generating: false, sent: true }) === '网页已生成完毕，正在回传');
+check('没有停止按钮但也没内容 → 不说成"已停止生成"（实测那只是会话页切换期）', D.phaseOf({ text: '', generating: false, sent: true }) === '已提交，网页尚未渲染出答复（可能在切换会话页）');
 
 console.log('\n=== 6) 扩展清单自检 ===');
 {

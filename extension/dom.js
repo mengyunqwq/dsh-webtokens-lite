@@ -227,7 +227,9 @@
   function phaseOf({ text, reasoning, generating, sent }) {
     if (!sent) return '正在把提示词提交到网页';
     if (generating) return text ? '网页正在生成回复' : (reasoning ? '网页正在思考' : '已提交，等待网页开始输出');
-    if (!text) return '网页已停止生成，正在确认是否有答复';
+    // 注意：没有停止按钮**不等于**"生成结束"——提交后页面往往会切到会话页并重建 DOM，
+    // 那段时间既没有停止按钮也没有内容。原来这里写"已停止生成"，会把这种正常等待说成故障。
+    if (!text) return '已提交，网页尚未渲染出答复（可能在切换会话页）';
     return '网页已生成完毕，正在回传';
   }
 
