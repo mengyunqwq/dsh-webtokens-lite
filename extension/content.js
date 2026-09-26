@@ -11,7 +11,7 @@
 
 (() => {
   const D = globalThis.DSHOwnDom;
-  const VERSION = '1.0.3';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
+  const VERSION = '1.0.4';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let active = null;
 
@@ -98,8 +98,13 @@
         // 而且不再无限等：网页明明停止生成了、却长时间读不到任何文本，就带着现场信息报错。
         if (confirmed && !snap.generating && !snap.text) {
           if (!stoppedEmptySince) stoppedEmptySince = Date.now();
-          else if (Date.now() - stoppedEmptySince > 20_000) {
-            throw new Error(`网页已停止生成但读不到答复文本（命中 ${snap.rowCount} 行）——可能是页面结构变了，把这条信息发我即可定位`);
+          else if (Date.now() - stoppedEmptySince > 25_000) {
+            // 用**不可重试**的错误码：提示词可能已经发出去了（confirmed=true），让调用方自动
+            // 重试就会在用户账号里留下第二条一样的提问。宁可把它交给用户/宿主去判断。
+            throw Object.assign(
+              new Error(`网页已停止生成但读不到答复文本（命中 ${snap.rowCount} 行，读到 0 字）——可能页面还在加载，或页面结构变了`),
+              { code: 'WEB_NO_REPLY_AFTER_SEND' },
+            );
           }
         } else stoppedEmptySince = 0;
         if (snap.text !== lastText) { lastText = snap.text; stableSince = Date.now(); }
