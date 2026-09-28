@@ -158,5 +158,14 @@ console.log('\n=== 8) 模型把 JSON 塞进 text 却不转义 → 解析侧容�
   check('命令还原正确（内层引号与路径都保留）', /cmd \/c dir \/b \/s "E:\\梦云Agent\\src"/.test(String(cmdArgs.command)), String(cmdArgs.command).slice(0, 56));
 }
 
+console.log('\n=== 9) 报错自带身份（哪一个实现、哪一版、哪个任务）===');
+{
+  // 2026-09-28 真机教训：多份实现的报错文案完全一样，出了事无法判断是谁在解析、版本是否已更新，
+  // 排查成本极高（"修复明明发了、任务仍失败"）。现在报错第一段就是身份标签 + 本次 request_id。
+  const e = throwsWith(() => parseReply('这不是 JSON，只是一段散文。', { id: 'req-idtest' }), 'WEB_REPLY_JSON');
+  check('报错带 <包名>@<版本> 身份标签', /〔[^〕]+@\d+\.\d+\.\d+〕/.test(String(e?.message)), String(e?.message).slice(0, 34));
+  check('报错带本次 request_id（可与扩展存储对账）', String(e?.message).includes('request_id=req-idtest'));
+}
+
 console.log('\n' + (fail === 0 ? `全部通过 ✓  (${pass} 项)` : `失败 ${fail} 项 ✗ (通过 ${pass})`));
 process.exit(fail === 0 ? 0 : 1);
