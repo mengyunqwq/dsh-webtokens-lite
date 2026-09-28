@@ -21,15 +21,22 @@ rem   Without it, an exited bridge would sit at "pause" forever inside an invisi
 rem   while still holding bridge.out.log open - and the next autostart could not open that
 rem   log for appending, so it silently started nothing (observed while testing).
 
-rem dependencies (ajv) are bundled in the installer package; npm is only needed for source clones
-if exist node_modules goto have_deps
-where npm >nul 2>nul
-if errorlevel 1 goto no_npm
-echo First run: installing dependencies...
-call npm install --no-audit --no-fund
-if errorlevel 1 goto fail
+rem NOTE 4: there is deliberately NO dependency step here - do not add one back.
+rem   This implementation imports only "node:" builtins plus its own ./lib/*.mjs files
+rem   (verified: no file in the package imports ajv or anything else), so there is
+rem   nothing to install.
+rem   The previous version gated on "node_modules exists, else npm install". A clean
+rem   machine has no node_modules (the kit never ships one) and no npm on PATH (the
+rem   portable node lives under %~dp0node and is never added to PATH), so "where npm"
+rem   failed and this file exited 1 BEFORE start.mjs ever ran. Because autostart.vbs
+rem   launches this file hidden, the user saw a successful install while the bridge
+rem   never started, and the device stayed offline with no visible error.
 
-:have_deps
+rem Fail loudly when node itself is missing: silently exiting 0 here looks like success
+rem (and autostart would report nothing).
+"%NODE_EXE%" --version >nul 2>nul
+if errorlevel 1 goto no_node
+
 if exist config.json goto run
 echo Not initialized yet: running setup...
 "%NODE_EXE%" setup.mjs
@@ -37,16 +44,17 @@ if errorlevel 1 goto fail
 
 :run
 "%NODE_EXE%" start.mjs
+if errorlevel 1 goto fail
 echo.
 echo [exited] press any key to close
 if "%DSH_WEB_BRIDGE_NO_PAUSE%"=="1" exit /b 0
 pause >nul
 exit /b 0
 
-:no_npm
-echo [ERROR] node_modules is missing and npm was not found.
-echo         Reinstall with the one-command installer (it bundles dependencies),
-echo         or install Node.js 22+ and run: npm install
+:no_node
+echo [ERROR] Node.js not found.
+echo         Expected the portable copy at "%~dp0node\node.exe", or "node" on PATH.
+echo         Re-run the one-command installer, or install Node.js 22+ and retry.
 if "%DSH_WEB_BRIDGE_NO_PAUSE%"=="1" exit /b 1
 pause >nul
 exit /b 1

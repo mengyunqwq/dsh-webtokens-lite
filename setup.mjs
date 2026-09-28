@@ -11,10 +11,10 @@
 //   npm run setup -- --doctor
 
 import { randomBytes } from 'node:crypto';
-import { copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, basename } from 'node:path';
-import { CHROME_DIR, CONFIG_PATH, VENDOR_DIR, OWN_EXTENSION_DIR, TOKEN_PATTERN, ensureDir, readConfig, writeConfig, updateConfig, PLUGIN_DIR } from './lib/config.mjs';
+import { CHROME_DIR, CONFIG_PATH, VENDOR_DIR, OWN_EXTENSION_DIR, TOKEN_PATTERN, ensureDir, readConfig, writeConfig, updateConfig, PLUGIN_DIR, BRIDGE_MODE } from './lib/config.mjs';
 import { fetchUpstream, verifyVendor, extensionFiles, UPSTREAM } from './lib/upstream.mjs';
 import { applyPatches, verifyPatched, readManifest } from './lib/patches.mjs';
 import { pair, AGENT_VERSION } from './lib/agent.mjs';
@@ -48,7 +48,10 @@ function resolveMode() {
   if (!modeArg && args.some((a) => a === '--bridge' || a.startsWith('--bridge='))) {
     die('没有认出 --bridge 的值（两种写法都可以：--bridge=own 或 --bridge own）');
   }
-  return modeArg || process.env.DSH_WEB_BRIDGE_MODE || readConfig()?.bridge || 'upstream';
+  // 复用 lib/config.mjs 里那一份解析结果：**不能让 doctor 与安装各写一套判定**，
+  // 否则配置缺少 bridge 字段时两边会得出不同结论（实测：doctor 报 upstream 的版本号，
+  // 而 chrome/ 里铺的其实是自研扩展）。
+  return modeArg || BRIDGE_MODE;
 }
 
 function log(...a) { console.log(...a); }
@@ -67,12 +70,26 @@ function checkNode() {
   if (major < 22) die(`需要 Node.js 22 及以上，当前是 ${process.versions.node}。请先升级 Node。`);
 }
 
-function buildExtensionDir(token, mode = 'upstream') {
+function buildExtensionDir(token, mode = 'upstream', port = 3081) {
   ensureDir(CHROME_DIR);
+  // 铺之前先清空（保留 local-config.json，最后重写）：own 与 upstream 两套扩展的文件名并不相同，
+  // 只覆盖同名文件会让目录里混着**另一份实现**的脚本、manifest 与实际文件列表不一致
+  // （实测：切到 own 之后 chrome/ 里仍躺着上游的 inspect.js / page.js / records.js / tabs.js…，
+  //  而浏览器加载的正是这份混合目录）。own 侧的 bin/setup.mjs 早就是这么做的。
+  for (const entry of readdirSync(CHROME_DIR)) {
+    if (entry === 'local-config.json') continue;
+    rmSync(join(CHROME_DIR, entry), { recursive: true, force: true });
+  }
   // own 模式：直接铺本仓库 extension/ 里我们自己的扩展（不碰 vendor/，也不需要上游）
   const files = mode === 'own' ? ownExtensionFiles() : extensionFiles();
   for (const file of files) copyFileSync(file, join(CHROME_DIR, basename(file)));
-  writeFileSync(join(CHROME_DIR, 'local-config.json'), JSON.stringify({ token }, null, 2) + '\n', { mode: 0o600 });
+  // base 必须一起写：扩展的 background.js 是 {...DEFAULTS, ...cfg} 合并，只写 token 的话
+  // 改端口后扩展仍然死认 3081 —— 端口不可配，而且错误信息指向不了真正原因。
+  writeFileSync(
+    join(CHROME_DIR, 'local-config.json'),
+    JSON.stringify({ token, base: `http://127.0.0.1:${port}` }, null, 2) + '\n',
+    { mode: 0o600 },
+  );
   return files.length;
 }
 
@@ -194,7 +211,7 @@ async function main() {
   }
 
   // 3) 扩展目录
-  const count = buildExtensionDir(config.token, mode);
+  const count = buildExtensionDir(config.token, mode, Number(config.port) || 3081);
   log(`  ✓ 已铺出扩展目录（${count} 个文件）→ ${CHROME_DIR}`);
 
   // 4) 记录来源与实现选择，便于排查"这份扩展是哪来的"

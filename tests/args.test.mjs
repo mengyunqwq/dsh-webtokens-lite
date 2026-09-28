@@ -20,12 +20,12 @@ let pass = 0, fail = 0;
 const check = (name, ok, extra = '') => { if (ok) { pass++; console.log('  ✓ ' + name + (extra ? '   ' + extra : '')); } else { fail++; console.log('  ✗ ' + name + (extra ? '   ' + extra : '')); } };
 
 /** 跑 setup.mjs，把输出写进文件（不用管道），返回 { code, out } */
-function runSetup(args) {
+function runSetup(args, env = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'lite-args-'));
   const outFile = join(dir, 'out.txt');
   const fd = require('node:fs').openSync(outFile, 'w');
   try {
-    const r = spawnSync(process.execPath, [join(ROOT, 'setup.mjs'), ...args], { cwd: ROOT, stdio: ['ignore', fd, fd], timeout: 60_000 });
+    const r = spawnSync(process.execPath, [join(ROOT, 'setup.mjs'), ...args], { cwd: ROOT, env: { ...process.env, ...env }, stdio: ['ignore', fd, fd], timeout: 60_000 });
     return { code: r.status, out: readFileSync(outFile, 'utf8') };
   } finally { try { require('node:fs').closeSync(fd); } catch { /* ignore */ } }
 }
@@ -37,9 +37,18 @@ const require = createRequire(import.meta.url);
 console.log('=== 1) 值解析：两种写法都要认 ===');
 {
   const text = readFileSync(join(ROOT, 'setup.mjs'), 'utf8');
+  const cfgText = readFileSync(join(ROOT, 'lib', 'config.mjs'), 'utf8');
   check('value() 支持 --name=value 的等号写法', /startsWith\('--' \+ name \+ '='\)/.test(text));
   check('给了 --bridge 却认不出时会报错（不静默回退）', /没有认出 --bridge 的值/.test(text));
-  check('mode 解析顺序含环境变量 DSH_WEB_BRIDGE_MODE', /modeArg \|\| process\.env\.DSH_WEB_BRIDGE_MODE/.test(text));
+  // 解析顺序只保留**一处**实现（lib/config.mjs）。doctor 与安装各写一套时，配置缺少 bridge
+  // 字段会让两边得出不同结论 —— 实测：doctor 报 upstream 的版本号（"扩展版本 0.2.19"），
+  // 而 chrome/ 里铺的其实是自研扩展。
+  check('mode 解析委托给 lib/config.mjs 的统一实现', /modeArg \|\| BRIDGE_MODE/.test(text));
+  check('统一实现里含环境变量 DSH_WEB_BRIDGE_MODE', /process\.env\.DSH_WEB_BRIDGE_MODE/.test(cfgText));
+  check('缺 bridge 字段时按"机器上实际有什么"判定（不再无条件 upstream）', /_hasVendor \? 'upstream'/.test(cfgText) && /_hasOwnExtension \? 'own'/.test(cfgText));
+  // 行为断言（比 grep 源码可靠）：环境变量给 own 时，doctor 必须如实报"自研（own）"
+  const envOwn = runSetup(['--doctor'], { DSH_WEB_BRIDGE_MODE: 'own' });
+  check('环境变量 DSH_WEB_BRIDGE_MODE=own 时 doctor 报自研', envOwn.code === 0 && /自研（own）/.test(envOwn.out), 'code=' + envOwn.code);
 }
 
 console.log('\n=== 2) 非法值要明确失败（而不是继续装）===');
