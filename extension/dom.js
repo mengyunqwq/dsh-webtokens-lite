@@ -383,7 +383,7 @@
   }
 
   globalThis.DSHOwnDom = {
-    SELECTORS, isVisible, findComposer, findStop, findSend, rows, textOf, reasoningOf,
+    SELECTORS, isVisible, findComposer, findStop, findSend, composerText, setComposerText, rows, textOf, reasoningOf,
     captureBaseline, scan, completeJson, acceptDelay, stableEnough, pollDelay, phaseOf, diagnose, isSignInPage,
     looksLikeAnswer,
   };

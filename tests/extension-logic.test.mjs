@@ -180,6 +180,35 @@ console.log('\n=== 4e) 认账门：必须看到本轮编号或契约字段 kind�
   check('没给 requestId 时只认 kind 字段', D.looksLikeAnswer('一段散文，没有任何字段', '') === false);
 }
 
+console.log('\n=== 5a) 输入框读写按形态无关（contenteditable 支持）===');
+{
+  // content.js 依赖 dom.js 这一对函数：textarea 读 .value，contenteditable 读 textContent。
+  // 以前 content.js 自己写了一份只认 HTMLTextAreaElement 的 setter —— contenteditable 时
+  // 提交前校验永远读到 undefined，直接抛「提示词没有进入网页输入框」。
+  check('dom.js 导出了 composerText 与 setComposerText', typeof D.composerText === 'function' && typeof D.setComposerText === 'function');
+  const fakeDoc = {
+    execCommand: () => false,
+    querySelectorAll: () => [],
+  };
+  const editable = makeEl({ text: '', matches: ['[contenteditable="true"]'] });
+  editable.tagName = 'DIV';
+  editable.contentEditable = 'true';
+  editable.focus = () => {};
+  editable.dispatchEvent = () => {};
+  // execCommand 失败 → 退化路径写 textContent（假 DOM 无 setter，直接赋值）
+  try {
+    D.setComposerText(fakeDoc, editable, '提示词正文');
+    check('contenteditable 写入失败时退化到 textContent', String(editable.textContent || '').includes('提示词正文'));
+  } catch (e) {
+    check('contenteditable 写入失败时退化到 textContent', false, '抛错：' + e.message);
+  }
+  editable.textContent = '已经写进去的提示词';
+  check('composerText 按 textContent 读到 contenteditable 的内容', D.composerText(editable).includes('已经写进去的提示词'));
+  const ta = composer('写进 textarea 的提示词');
+  ta.tagName = 'TEXTAREA';
+  check('composerText 对 textarea 读 .value', D.composerText(ta) === '写进 textarea 的提示词');
+}
+
 console.log('\n=== 5) 状态行文案 ===');check('生成中且已有文本 → 说明正在生成', D.phaseOf({ text: 'abc', generating: true, sent: true }) === '网页正在生成回复');
 check('只有思考 → 说明正在思考', D.phaseOf({ text: '', reasoning: '想', generating: true, sent: true }) === '网页正在思考');
 check('还没确认发送 → 说明在提交', D.phaseOf({ text: '', reasoning: '', generating: false, sent: false }) === '正在把提示词提交到网页');
@@ -190,7 +219,11 @@ console.log('\n=== 6) 扩展清单自检 ===');
 {
   const manifest = JSON.parse(readFileSync(join(ROOT, 'extension', 'manifest.json'), 'utf8'));
   check('MV3', manifest.manifest_version === 3);
-  check('只申请本机桥接与 DeepSeek 两个域', manifest.host_permissions.length === 2 && manifest.host_permissions.some((h) => h.includes('127.0.0.1:3081')));
+  // 端口不再写死在 manifest 里（改端口不需要重排扩展），只要覆盖 127.0.0.1 各端口即可
+  check('host_permissions 覆盖本机任意端口 + DeepSeek',
+    manifest.host_permissions.some((h) => h === 'http://127.0.0.1/*' || h === 'http://localhost/*')
+    && manifest.host_permissions.some((h) => h.includes('chat.deepseek.com')),
+    JSON.stringify(manifest.host_permissions));
   check('内容脚本顺序正确（dom.js 在 content.js 之前）', JSON.stringify(manifest.content_scripts[1].js) === JSON.stringify(['dom.js', 'content.js']));
   check('时钟补丁注入 MAIN world 且在 document_start', manifest.content_scripts[0].world === 'MAIN' && manifest.content_scripts[0].run_at === 'document_start');
   for (const f of ['background.js', 'content.js', 'dom.js', 'clock.js', 'popup.html', 'popup.js']) {

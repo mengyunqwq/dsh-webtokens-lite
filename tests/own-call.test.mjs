@@ -3,7 +3,7 @@
 // callBridge → 组装提示词 → broker → 假扩展 → 回传原文 → 本机解析 → OpenAI 响应 这条链路。
 // 同时覆盖：重试（第一次让扩展报错）、工具调用、参数剥字段、取消/超时。
 import { createBroker } from '../lib/broker.mjs';
-import { callBridgeOwn } from '../lib/bridge.mjs';
+import { callBridgeOwn, retryable } from '../lib/bridge.mjs';
 import { toOpenAICompletion } from '../lib/protocol.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -116,6 +116,24 @@ console.log('\n=== 5) 扩展完全不响应 → 排队/超时按人话报错（�
   check('超时后报错而不是一直等', !!error, error?.message?.slice(0, 46));
   check('错误里点明"没有取走任务"', /没有取走/.test(error?.message || ''));
   check('用时接近设定预算（没有无限等）', took < 6000, took + 'ms');
+}
+
+console.log('\n=== 6) 重试边界：提示词可能已提交的失败一律不重试 ===');
+{
+  // 这是本项目的第一号安全约束：重发会在用户自己的 DeepSeek 账号里留下第二条一模一样的提问。
+  // 原先的名单里混进了 WEB_ABORTED / WEB_PAGE_ERROR / WEB_DISCONNECTED / WEB_TRANSPORT_ERROR，
+  // 还有一个"错误文案里出现 aborted/stalled 就重试"的正则兜底 —— 这些都可能发生在提示词
+  // 已经进了网页输入框之后。这里把边界钉死。
+  check('排队超时可重试（没人取走任务，提示词根本没发出去）', retryable({ code: 'WEB_TIMEOUT' }) === true);
+  check('已派发后超时不重试（提示词可能已提交）', retryable({ code: 'WEB_TIMEOUT_AFTER_DISPATCH' }) === false);
+  check('调用方取消不重试', retryable({ code: 'WEB_ABORTED' }) === false);
+  check('页面重载/断线不重试', retryable({ code: 'WEB_PAGE_ERROR' }) === false && retryable({ code: 'WEB_DISCONNECTED' }) === false);
+  check('传输中断不重试', retryable({ code: 'WEB_TRANSPORT_ERROR' }) === false);
+  check('网页侧停滞不重试', retryable({ code: 'WEB_STALL' }) === false);
+  check('读到上一轮旧答复不重试', retryable({ code: 'WEB_REQUEST_ID' }) === false);
+  check('文案里带 aborted/stalled 也不再被误判为可重试', retryable({ message: 'socket hang up / aborted / stalled' }) === false);
+  check('协议类失败仍可重试（模型没按契约输出，重发一轮 + 提醒才有意义）',
+    retryable({ code: 'WEB_REPLY_JSON' }) === true && retryable({ code: 'WEB_TOOL_MISSING_ARGS' }) === true);
 }
 
 await broker.close();

@@ -7,8 +7,10 @@
 //     就报错而不是重发（用户账号里不会出现两条一样的提问）；
 //   · 取消（broker 回 cancelled 或用户点停止）会传给页面驱动，让它点网页的停止按钮。
 
-const DEFAULTS = { base: 'http://127.0.0.1:3081' };
-const VERSION = '1.0.14';   // 改动扩展行为时请一起改这里 + manifest.version，便于确认浏览器里加载的是哪一版
+// 版本号单一来源是 manifest.json：SW 里直接 getManifest 读取，不再手抄。
+// （这里留一个兜底值，万一 getManifest 意外不可用也能报出版本。）
+let VERSION = '1.0.14';
+try { VERSION = chrome.runtime.getManifest().version; } catch { /* 兜底值 */ }
 let pumping = false;
 
 const configPromise = (async () => {
