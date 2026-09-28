@@ -125,7 +125,7 @@ dispatch(deviceId, { name: 'web_prompt', args: { body } }, { timeoutMs: 300_000 
 | 文件 | 说明 |
 |---|---|
 | `webbridge.ps1` | 一键安装器（磁盘上带 UTF-8 BOM 供 `-File` 执行；对外提供时**必须去掉 BOM**，否则 `irm \| iex` 报错） |
-| `webbridge.zip` | 安装包 = 客户端源码 **+ `node_modules`（ajv 及其依赖，约 1.3MB）**，这样使用者**不需要 npm install** |
+| `webbridge.zip` | 安装包 = 客户端源码（**不含 `node_modules`**：自研实现零依赖，只 import `node:` 内置模块与自己的 `./lib/*.mjs`，打包器把 `node_modules/`、`tests/`、打包器自身都排除在外），使用者**不需要 npm install** |
 
 再挂三个路由：
 

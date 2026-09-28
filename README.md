@@ -112,5 +112,9 @@ Remove-Item (Join-Path ([Environment]::GetFolderPath('Startup')) 'dsh-webtokens-
 ## 六、自证
 
 ```bash
-npm test        # 166 项：协议解析 / broker（含 OpenAI 兼容面）/ 扩展逻辑 / 自研调用 / 参数解析
+npm test        # 221 项：协议解析 / broker / 扩展逻辑 / 自研调用 / 补丁 / 参数解析 / 宿主自检
 ```
+
+> 本 lite 的 broker **只提供扩展面**（`/ext/poll|progress|result`、`/task`、`/status`）。
+> OpenAI 兼容面（`/v1/models`、`/v1/chat/completions`）在 **DSH 插件那份实现**（`dsh-web-bridge-own`）里，
+> 两份实现的 broker 其余逻辑逐行相同 —— 这里刻意不重复实现，免得两处漂移。
