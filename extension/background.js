@@ -7,9 +7,15 @@
 //     就报错而不是重发（用户账号里不会出现两条一样的提问）；
 //   · 取消（broker 回 cancelled 或用户点停止）会传给页面驱动，让它点网页的停止按钮。
 
+// ⚠ 这一行别删（2026-09-28 真实事故）：有人改版本号时把 `const DEFAULTS = ...` 一起删掉了，
+// 下面 configPromise 里的 `{ ...DEFAULTS, ...cfg }` 立刻抛 `ReferenceError: DEFAULTS is not defined`
+// → 扩展解析不到配置、永远连不上 broker，而**当时的测试依然全绿**（没有任何测试真的执行
+// background.js）；线上分发的整包里就是这份坏代码，用户侧表现是"扩展卡片在、但一直未连接"。
+// tests/extension-logic.test.mjs 的 4h 节现在会在假 chrome 环境里真的加载本文件，删了就会红。
+const DEFAULTS = { base: 'http://127.0.0.1:3081' };
 // 版本号单一来源是 manifest.json：SW 里直接 getManifest 读取，不再手抄。
 // （这里留一个兜底值，万一 getManifest 意外不可用也能报出版本。）
-let VERSION = '1.0.16';
+let VERSION = '1.0.17';
 try { VERSION = chrome.runtime.getManifest().version; } catch { /* 兜底值 */ }
 let pumping = false;
 

@@ -178,12 +178,16 @@ console.log('\n=== 4e) 认账门：必须看到本轮编号或契约字段 kind�
   check('思考过程/半截回答 → 不认账', D.looksLikeAnswer('让我想想…用户问的是天气，我需要先查一下城市。', 'req-abc') === false);
   check('空文本 → 不认账', D.looksLikeAnswer('', 'req-abc') === false);
   check('没给 requestId 时只认 kind 字段', D.looksLikeAnswer('一段散文，没有任何字段', '') === false);
+}
 
 console.log('\n=== 4f) N3：page-tail 必须出现"本轮契约对象"，提示词自己不算 ===');
 {
+  // 提示词最后一行含本轮编号（"request_id 必须是 req-abc"），且提示词里还有一段完整 JSON 示例。
+  // 只按"文本含编号"认账会把提示词当答复；要求"可解析且编号/kind 都对"才能排除它。
   const promptTail = '【对话】\n用户问：天气\n{"request_id":"req-示例编号","kind":"final","text":"给用户的最终回答"}\n【现在开始】只输出那个 JSON 对象，request_id 必须是 "req-abc"。';
   check('提示词尾部：含编号但不含本轮契约对象 → false', D.hasContractAnswer(promptTail, 'req-abc') === false);
   check('而 looksLikeAnswer 仍会误认为"像答复"（这正是要再加一道门的原因）', D.looksLikeAnswer(promptTail, 'req-abc') === true);
+
   const answered = '提示词…\n```json\n{"request_id":"req-abc","kind":"final","text":"晴"}\n```';
   check('真答复（本轮编号 + kind=final）→ true', D.hasContractAnswer(answered, 'req-abc') === true);
   const answeredCalls = '{"request_id":"req-abc","kind":"tool_calls","calls":[{"name":"t","arguments":{}}]}';
@@ -200,7 +204,6 @@ console.log('\n=== 4g) N1：clock.js 的开关必须有人写（否则渲染时�
   check('clock.js 读的是 dataset.dshOwnActive（data-dsh-own-active）', /dataset\?\.\[FLAG\]|dataset\[FLAG\]/.test(clock) && /FLAG\s*=\s*'dshOwnActive'/.test(clock));
   check('content.js 真的写这个标志（任务开始时置 1）', /dataset\.dshOwnActive\s*=\s*'1'/.test(content), 'content.js 写 dataset.dshOwnActive');
   check('任务结束会清掉标志（普通浏览走原生时序）', /delete\s+document\.documentElement\.dataset\.dshOwnActive/.test(content));
-}
 }
 
 console.log('\n=== 5a) 输入框读写按形态无关（contenteditable 支持）===');
@@ -237,6 +240,59 @@ check('只有思考 → 说明正在思考', D.phaseOf({ text: '', reasoning: '�
 check('还没确认发送 → 说明在提交', D.phaseOf({ text: '', reasoning: '', generating: false, sent: false }) === '正在把提示词提交到网页');
 check('已停止且有文本 → 说明在回传', D.phaseOf({ text: 'abc', generating: false, sent: true }) === '网页已生成完毕，正在回传');
 check('没有停止按钮但也没内容 → 不说成"已停止生成"（实测那只是会话页切换期）', D.phaseOf({ text: '', generating: false, sent: true }) === '已提交，网页尚未渲染出答复（可能在切换会话页）');
+
+console.log('\n=== 4h) background.js 真的能在假 chrome 环境里加载（防 DEFAULTS is not defined 这类） ===');
+{
+  // 为什么要有这一节：2026-09-28 的真实事故 —— 有人改 background.js 的版本号时，把上一行的
+  // `const DEFAULTS = { base: ... }` 一起删掉了，于是 configPromise 里的 `{ ...DEFAULTS, ...cfg }`
+  // 抛 ReferenceError: DEFAULTS is not defined → 扩展解析不到配置、永远连不上 broker（用户侧
+  // 表现只是"卡片在、但一直未连接"）。而**当时所有测试全绿**，因为 background.js 只被"检查文件
+  // 存在"，从不被执行 —— 线上分发的整包里就是这份坏代码。
+  const { createContext, runInContext } = await import('node:vm');
+  const src = readFileSync(join(ROOT, 'extension', 'background.js'), 'utf8');
+  const noop = () => {};
+  const states = [];
+  const rejections = [];
+  const onRejection = (e) => rejections.push(String(e?.message || e));
+  process.on('unhandledRejection', onRejection);
+  const ctx = {
+    console: { log: noop, warn: noop, error: noop },
+    setTimeout, clearTimeout, setInterval: () => 0, clearInterval: noop,
+    AbortSignal,
+    crypto: { randomUUID: () => 'uuid-for-test' },
+    fetch: async () => ({ ok: true, status: 200, json: async () => ({ token: 'x'.repeat(43), base: 'http://127.0.0.1:3081' }) }),
+    chrome: {
+      runtime: {
+        id: 'test-ext', getURL: (p) => 'file:///ext/' + p, getManifest: () => ({ version: 'test' }),
+        onMessage: { addListener: noop }, onStartup: { addListener: noop }, onInstalled: { addListener: noop },
+      },
+      storage: {
+        local: {
+          get: async () => ({ clientId: 'cid-for-test' }),
+          set: async (o) => { if (o && o.state) states.push(String(o.state)); },
+          remove: async () => {},
+        },
+      },
+      action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
+      tabs: {
+        query: async () => [], sendMessage: async () => null, create: async () => ({ id: 1 }),
+        update: async () => {}, get: async () => ({ status: 'complete' }),
+        onUpdated: { addListener: noop, removeListener: noop }, reload: async () => {},
+      },
+      alarms: { create: noop, onAlarm: { addListener: noop } },
+    },
+  };
+  createContext(ctx);
+  let loadError = null;
+  try { runInContext(src, ctx); } catch (e) { loadError = e; }
+  check('background.js 能在假 chrome 环境里加载（没有同步抛错）', !loadError, loadError ? loadError.message : '');
+  await new Promise((r) => setTimeout(r, 150));
+  process.off('unhandledRejection', onRejection);
+  check('加载后没有未处理的 Promise 拒绝（例如 DEFAULTS is not defined）', rejections.length === 0, rejections.slice(0, 2).join(' | '));
+  const badStates = states.filter((s) => /is not defined|ReferenceError|local-config/.test(s));
+  check('没有把"配置解析失败"写进状态（写了就意味着扩展连不上 broker）', badStates.length === 0, badStates.slice(0, 2).join(' | '));
+  check('background.js 里用到的 DEFAULTS 必须有声明', /const DEFAULTS\s*=/.test(src));
+}
 
 console.log('\n=== 6) 扩展清单自检 ===');
 {
