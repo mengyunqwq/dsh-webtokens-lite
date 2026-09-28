@@ -13,7 +13,7 @@
   const D = globalThis.DSHOwnDom;
   // 版本号单一来源是 manifest.json（content script 同样能 getManifest），不再手抄。
   // 兜底值：万一读取失败也能报出版本，便于排查看的是哪一版加载的。
-  let VERSION = '1.0.14';
+  let VERSION = '1.0.16';
   try { VERSION = chrome.runtime.getManifest().version; } catch { /* 兜底值 */ }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let active = null;
@@ -45,6 +45,17 @@
     }
   };
 
+  // N1：clock.js（MAIN world）靠 <html data-dsh-own-active="1"> 判断"任务进行中"，
+  // 只有为真时才维持渲染时钟。全仓库此前**没有任何地方写这个属性** → 那个补丁是死代码，
+  // 后台标签页节流完全没被缓解（表现：标签页不在前台时答复变慢/卡住且无报错）。
+  // 这里在任务开始/结束时同步该属性（dataset.dshOwnActive ⇔ data-dsh-own-active）。
+  const setRenderClockHint = (on) => {
+    try {
+      if (on) document.documentElement.dataset.dshOwnActive = '1';
+      else delete document.documentElement.dataset.dshOwnActive;
+    } catch { /* 页面结构不允许也不影响搬运 */ }
+  };
+
   async function run(job) {
     if (active) throw new Error('网页上已有桥接任务在跑');
     // ⚠ active 必须直接引用 job 本体（而不是再包一层新对象）：取消监听器改的是
@@ -54,6 +65,7 @@
     // 共用同一引用后，取消只需要改一处，循环下一拍立刻看见。
     active = job;
     job.cancelled = false;
+    setRenderClockHint(true);   // N1：任务期间让 MAIN world 的 clock.js 维持渲染时钟
     const sentKey = 'dsh-own-sent-' + job.id;
     const started = Date.now();
     // 第一件事就留个痕迹：否则"任务被派发了但页面侧什么都没做"这种情况，
@@ -138,7 +150,11 @@
         // 回传，客户端解析不到 JSON → 报「网页答复里没有可解析的 JSON 对象」并重试一次
         // （用户看到的就是那条报错）。宁可多等一会儿，也不要回传半截内容。
         const looksLike = D.looksLikeAnswer(snap.text, job.requestId);
-        if (confirmed && snap.answerSeen && looksLike && snap.changed && D.stableEnough({ text: snap.text, stableMs: Date.now() - stableSince, hasStop: snap.generating })) {
+        // N3：page-tail 兜底路径还要更严——必须真的出现**本轮契约对象**（可解析、request_id 为本轮、
+        // kind 合法），而不是"文本里出现过本轮编号"。因为用户刚提交的提示词最后一行就写着
+        // `request_id 必须是 "req-xxx"`，只按编号认账会把提示词本身当成答复回传（进而触发重试）。
+        const contractOk = snap.source !== 'page-tail' || D.hasContractAnswer(snap.text, job.requestId);
+        if (confirmed && snap.answerSeen && looksLike && contractOk && snap.changed && D.stableEnough({ text: snap.text, stableMs: Date.now() - stableSince, hasStop: snap.generating })) {
           const text = snap.text;
           if (!text.trim()) throw new Error('网页停止生成但没有可读的答复内容');
           sessionStorage.removeItem(sentKey);
@@ -151,6 +167,7 @@
       if (job.cancelled) { sessionStorage.removeItem(sentKey); return; }
       throw new Error('等待网页答复超时（10 分钟）');
     } finally {
+      setRenderClockHint(false);   // N1：任务结束立刻停手，普通浏览走原生时序
       active = null;
     }
   }

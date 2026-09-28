@@ -77,33 +77,54 @@ console.log('\n=== 2) 工具调用 + 参数剥字段 ===');
   check('OpenAI 响应里 finish_reason=tool_calls', completion.choices[0].finish_reason === 'tool_calls' && completion.choices[0].message.tool_calls.length === 1);
 }
 
-console.log('\n=== 3) 第一次答成散文（本机解析失败，可重试）→ 自动重试一次（换新 request_id）===');
+console.log('\n=== 2b) 只用 inputSchema 声明参数的工具也要剥多余字段（A-10）===');
 {
-  // 注意：这里**故意**不用"网页侧失败"来测重试——网页侧失败（如页面重载）是不能重试的，
-  // 重发会让用户账号里出现两条一样的提问。可以安全重试的是"答复解析失败"。
-  const ids = [];
-  const ext = fakeExtension((prompt, i, requestId) => {
-    const id = requestId;
-    ids.push(id);
-    return i === 0
-      ? { text: '这轮我直接说人话了，没有 JSON。' }
-      : { text: JSON.stringify({ request_id: id, kind: 'final', text: '第二次成功' }) };
-  }, { polls: 2 });
-  const out = await callBridgeOwn({ token: TOKEN, port: PORT, timeoutMs: 5000, body: { messages: [{ role: 'user', content: 'hi' }] }, onProgress: () => {} });
+  // 有些调用方（MCP / OpenAI custom 风格）用 inputSchema 而不是 parameters 声明参数。
+  // 少了这个兜底时，工具调用回来**不会剥多余字段**，调用方会拿到契约之外的键。
+  const ext = fakeExtension((prompt, i, requestId) => ({
+    text: JSON.stringify({ request_id: requestId, kind: 'tool_calls', calls: [{ name: 'lookup', arguments: { q: '北京', junk: '多写的' } }] }),
+  }), { polls: 1 });
+  const out = await callBridgeOwn({
+    token: TOKEN, port: PORT, timeoutMs: 5000,
+    body: {
+      model: 'web-deepseek',
+      messages: [{ role: 'user', content: '查一下' }],
+      tools: [{ type: 'function', function: { name: 'lookup', description: '查询', inputSchema: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] } } }],
+    },
+  });
   await ext;
-  check('重试后成功', out.reply.text === '第二次成功' && out.attempts === 2, 'attempts=' + out.attempts);
-  check('两次尝试用了不同的 request_id（避免撞上重复 id）', ids.length === 2 && ids[0] !== ids[1]);
+  const args = JSON.parse(out.reply.calls[0].arguments);
+  check('inputSchema 声明的参数也能剥掉多余字段', args.q === '北京' && !('junk' in args), JSON.stringify(args));
 }
 
-console.log('\n=== 4) 网页答成散文 → 报可重试的错误，且不猜内容 ===');
+console.log('\n=== 3) 散文答复 → 不自动重试（问题5 折中：避免账号里出现第二条提问）===');
 {
-  const ext = fakeExtension(() => ({ text: '我觉得今天天气不错，就不输出 JSON 了。' }), { polls: 2 });
+  // 旧行为：散文会换新 request_id 自动重发一轮。2026-09-28 决策后**只重试"缺必需参数"**，
+  // 其余格式类失败只报错——它们都是"提示词已提交"，重发会在用户账号里多一条一样的提问。
+  // ⚠ clientId 必须复用同一个：/ext/poll 遇到未送达的取消通知会按 clientId 重复投递，
+  //   新 clientId 会一直拿到通知而登记不成等待者（实测踩到）。
+  const ids = [];
+  const ext = fakeExtension((prompt, i, requestId) => {
+    ids.push(requestId);
+    return { text: '这轮我直接说人话了，没有 JSON。' };
+  }, { polls: 2 });
+  let error = null;
+  try { await callBridgeOwn({ token: TOKEN, port: PORT, timeoutMs: 5000, body: { messages: [{ role: 'user', content: 'hi' }] }, onProgress: () => {} }); }
+  catch (e) { error = e; }
+  await ext;
+  check('散文答复只提交了一次（不再自动重发）', ids.length === 1, '提交次数=' + ids.length);
+  check('报 WEB_REPLY_JSON 且不可重试', error?.code === 'WEB_REPLY_JSON' && retryable(error) === false, String(error?.code));
+}
+
+console.log('\n=== 4) 网页答成散文 → 报错（不再自动重试），且不猜内容 ===');
+{
+  const ext = fakeExtension(() => ({ text: '我觉得今天天气不错，就不输出 JSON 了。' }), { polls: 1 });
   let error = null;
   try { await callBridgeOwn({ token: TOKEN, port: PORT, timeoutMs: 5000, body: { messages: [{ role: 'user', content: 'x' }] } }); }
   catch (e) { error = e; }
   await ext;
   check('抛出解析类错误', !!error && /JSON/.test(error.message), error?.message?.slice(0, 40));
-  check('错误码标成 WEB_REPLY_JSON（可重试）', error?.code === 'WEB_REPLY_JSON', String(error?.code));
+  check('错误码标成 WEB_REPLY_JSON（不再重试，避免账号里第二条提问）', error?.code === 'WEB_REPLY_JSON' && retryable(error) === false, String(error?.code));
 }
 
 console.log('\n=== 5) 扩展完全不响应 → 排队/超时按人话报错（不会静默卡住）===');
@@ -132,8 +153,44 @@ console.log('\n=== 6) 重试边界：提示词可能已提交的失败一律不�
   check('网页侧停滞不重试', retryable({ code: 'WEB_STALL' }) === false);
   check('读到上一轮旧答复不重试', retryable({ code: 'WEB_REQUEST_ID' }) === false);
   check('文案里带 aborted/stalled 也不再被误判为可重试', retryable({ message: 'socket hang up / aborted / stalled' }) === false);
-  check('协议类失败仍可重试（模型没按契约输出，重发一轮 + 提醒才有意义）',
-    retryable({ code: 'WEB_REPLY_JSON' }) === true && retryable({ code: 'WEB_TOOL_MISSING_ARGS' }) === true);
+  check('协议类失败中只有"缺必需参数"仍可重试（问题5 折中）',
+    retryable({ code: 'WEB_REPLY_JSON' }) === false && retryable({ code: 'WEB_TOOL_MISSING_ARGS' }) === true);
+}
+
+console.log('\n=== 9) 问题5（折中）：只有"缺必需参数"仍自动重试一次 ===');
+{
+  // 有界轮询（超时断开，不留"抢下一节任务"的长轮询）
+  const pollBounded = async () => {
+    try {
+      const r = await fetch(`http://127.0.0.1:${PORT}/ext/poll`, {
+        method: 'POST', headers: H,
+        body: JSON.stringify({ clientId: 'ext-1', version: '1.0.0', state: 'x' }),
+        signal: AbortSignal.timeout(3000),
+      });
+      return await r.json();
+    } catch { return null; }
+  };
+  await fetch(`http://127.0.0.1:${PORT}/ext/poll`, { method: 'POST', headers: H, body: JSON.stringify({ clientId: 'ext-1', version: '1.0.0', state: 'x', busy: true }) }).then((r) => r.json()).catch(() => null);
+  await sleep(60);
+
+  const missing = [];
+  const collector = (async () => {
+    for (let i = 0; i < 4 && missing.length < 2; i++) {
+      const job = await pollBounded();
+      if (!job?.task) continue;
+      missing.push(job.task.requestId);
+      const text = missing.length === 1
+        ? '{"kind":"tool_calls","calls":[{"name":"get_weather","arguments":{}}]}'
+        : JSON.stringify({ request_id: job.task.requestId, kind: 'final', text: '第二次好了' });
+      await fetch(`http://127.0.0.1:${PORT}/ext/result`, { method: 'POST', headers: H, body: JSON.stringify({ taskId: job.task.id, lease: job.task.lease, ok: true, text }) });
+    }
+  })();
+  const schema = [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } } }];
+  const out = await callBridgeOwn({ token: TOKEN, port: PORT, timeoutMs: 6000, body: { messages: [{ role: 'user', content: '查天气' }], tools: schema } });
+  await Promise.race([collector, sleep(12000)]);
+  check('缺必需参数仍自动重试一次（共两次提交）', missing.length === 2, '提交次数=' + missing.length);
+  check('两次尝试用了不同的 request_id', missing.length === 2 && missing[0] !== missing[1]);
+  check('第二次的答复被采纳', out.reply.text === '第二次好了');
 }
 
 await broker.close();

@@ -61,6 +61,18 @@ console.log('\n=== 3) 解析 final ===');
   check('final 空文本 → WEB_REPLY_TEXT', !!throwsWith(() => parseReply('{"kind":"final","text":"   "}', { id: 'req-a' }), 'WEB_REPLY_TEXT'));
 }
 
+console.log('\n=== 3b) N3：页面文本里的其它 JSON 不能被当成答复 ===');
+{
+  const toolDefs = '【工具定义】[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]';
+  const err = throwsWith(() => parseReply(toolDefs, { id: 'req-a' }), 'WEB_REPLY_KIND');
+  check('只有工具定义 JSON → 不会当成合法答复（报 kind 错）', !!err);
+  const injected = toolDefs + '\n' + '{"request_id":"req-other","kind":"final","text":"上一轮的旧答复"}';
+  check('混入"非本轮编号"的对象 → WEB_REQUEST_ID（不返回旧答复）', !!throwsWith(() => parseReply(injected, { id: 'req-a' }), 'WEB_REQUEST_ID'));
+  const real = toolDefs + '\n' + '{"request_id":"req-a","kind":"final","text":"本轮真答案"}';
+  const ok = parseReply(real, { id: 'req-a' });
+  check('同时存在工具定义与本轮答复 → 优先取本轮编号那条', ok.text === '本轮真答案', JSON.stringify(ok.text));
+}
+
 console.log('\n=== 4) 解析 tool_calls（含按调用方原始 schema 剥字段）===');
 {
   const schemas = new Map([['get_weather', { type: 'object', properties: { city: { type: 'string' } }, required: ['city'], additionalProperties: false }]]);

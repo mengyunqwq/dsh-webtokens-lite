@@ -300,6 +300,46 @@
   }
 
   /**
+   * 文本里是否存在**本轮的契约对象**：一个能解析的 JSON 对象，request_id 等于本轮编号，且 kind 合法。
+   * 为什么需要（N3）：page-tail 兜底路径里"本轮编号"也会出现在**用户刚提交的提示词**最后一行
+   * （`request_id 必须是 "req-xxx"`）——只按"文本含编号"认账会把提示词本身当成答复回传。
+   * 要求"能解析成契约对象"才能把它排除掉：提示词里那个编号在普通文本里，不在 JSON 对象里。
+   */
+  function hasContractAnswer(text, requestId) {
+    const s = String(text || '');
+    const rid = String(requestId || '');
+    if (!s || !rid) return false;
+    let depth = 0, start = -1, inStr = false, esc = false;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (inStr) {
+        if (esc) { esc = false; continue; }
+        if (ch === '\\') { esc = true; continue; }
+        if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === '{') { if (depth === 0) start = i; depth++; continue; }
+      if (ch === '}') {
+        if (depth > 0) {
+          depth--;
+          if (depth === 0 && start >= 0) {
+            const candidate = s.slice(start, i + 1);
+            start = -1;
+            try {
+              const o = JSON.parse(candidate);
+              if (o && typeof o === 'object' && !Array.isArray(o)
+                && String(o.request_id || '') === rid
+                && ['final', 'tool_calls'].includes(String(o.kind || ''))) return true;
+            } catch { /* 不是完整 JSON，继续往后找 */ }
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
    * 看起来是不是"本轮的答复"？
    * 判据：正文里出现本轮 request_id，或出现我们契约里的字段名 "kind"。
    *
@@ -385,6 +425,6 @@
   globalThis.DSHOwnDom = {
     SELECTORS, isVisible, findComposer, findStop, findSend, composerText, setComposerText, rows, textOf, reasoningOf,
     captureBaseline, scan, completeJson, acceptDelay, stableEnough, pollDelay, phaseOf, diagnose, isSignInPage,
-    looksLikeAnswer,
+    looksLikeAnswer, hasContractAnswer,
   };
 })();

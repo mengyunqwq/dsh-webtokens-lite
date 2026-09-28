@@ -160,6 +160,31 @@ console.log('\n=== 7) 没人来取任务 → 总超时后按"未被取走"报错
   check('超时失败且指出是没人取走', !!final && final.ok === false && /没有取走/.test(final.error), final ? final.error.slice(0, 70) : '（超时未返回）');
 }
 
+console.log('\n=== 8) N2：不把任务派给"自称忙"的 worker，且残留队列 id 不阻塞派发 ===');
+{
+  // 先消费可能残留的取消通知（收到未送达通知的 poll 会立刻返回、不登记等待者）
+  await poll({ clientId: 'ext-1', version: '1.0.0', state: 'x', busy: true });
+  await sleep(60);
+
+  const busyPoll = poll({ clientId: 'ext-1', version: '1.0.0', state: '忙', busy: true });
+  await sleep(60);
+  const s1 = broker.snapshot();
+  check('快照里能看到"忙"的等待者', s1.busyPollers === 1 && s1.pollers === 1, JSON.stringify({ pollers: s1.pollers, busy: s1.busyPollers }));
+
+  const taskRes = post('/task', { prompt: '忙时不派发', timeoutMs: 4000 });
+  await sleep(200);
+  const s2 = broker.snapshot();
+  check('忙 worker 在场时任务留在队列里、不派发', s2.active === null && s2.tasks.some((t) => t.state === 'queued'), JSON.stringify({ active: s2.active }));
+
+  const idlePoll = poll({ clientId: 'ext-1', version: '1.0.0', state: '空闲', busy: false });
+  const got = await Promise.race([idlePoll, sleep(3000).then(() => null)]);
+  check('worker 变闲后任务被派发（残留 id 不阻塞）', !!got?.task && got.task.prompt === '忙时不派发', JSON.stringify(got?.task ? { id: got.task.id } : got));
+  if (got?.task) await post('/ext/result', { taskId: got.task.id, lease: got.task.lease, ok: true, text: '{"kind":"final","text":"完成"}' });
+  const r = readNdjson(await taskRes);
+  await Promise.race([r.finished, sleep(3000)]);
+  void busyPoll;
+}
+
 await broker.close();
 clearTimeout(watchdog);
 console.log('\n' + (fail === 0 ? `全部通过 ✓  (${pass} 项)` : `失败 ${fail} 项 ✗ (通过 ${pass})`));

@@ -19,9 +19,13 @@ const broker = await startBroker({
   port,
   timeoutMs: timeoutMs + 20_000,
   onEvent: (event) => {
-    // 只打关键事件，避免刷屏；完整事件仍在 broker 内部保留给面板/审计
-    if (['queued', 'completed', 'failed', 'reply-validation'].includes(event?.type) && event.type !== 'reply-validation') {
-      log(`  [桥接] ${event.type}${event.code ? ' ' + event.code : ''}${event.message ? ' ' + event.message : ''}`);
+    // 只打关键事件，避免刷屏；完整事件仍在 broker 内部保留给面板/审计。
+    // A-5：名单必须用 broker **真实发出**的事件名（task_queued/task_dispatched/…）。
+    // 原来写的是 queued/completed/failed —— 一个都不会命中，排障时看不到"第 N 次交付没人接手"。
+    const KEY_EVENTS = new Set(['task_queued', 'task_dispatched', 'task_receipt', 'task_finished', 'task_redeliver', 'task_report_rejected']);
+    if (KEY_EVENTS.has(event?.type)) {
+      const extra = event.code || event.why || (event.attempt ? `第 ${event.attempt} 次交付` : '');
+      log(`  [桥接] ${event.type}${extra ? ' ' + extra : ''}`);
     }
   },
   log,
@@ -42,7 +46,9 @@ const heartbeat = setInterval(async () => {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/status`, { signal: AbortSignal.timeout(4000) });
     const s = await res.json();
-    log(`[心跳] 扩展${s.connected ? '在线' : '离线'} · 排队 ${s.queued} · ${s.worker ?? ''}`);
+    // A-6：worker 是对象，直接塞进模板字符串会打印成 [object Object]。取它里面的版本号。
+    const worker = s.connected ? `扩展 v${s.workerVersion ?? s.worker?.version ?? '?'}` : '扩展未连接';
+    log(`[心跳] ${worker} · 排队 ${s.queued ?? 0}`);
   } catch { log('[心跳] 本机桥接无响应'); }
 }, 300_000);
 heartbeat.unref?.();
