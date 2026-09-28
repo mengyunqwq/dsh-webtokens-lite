@@ -199,6 +199,16 @@ console.log('\n=== 4f) N3：page-tail 必须出现"本轮契约对象"，提示�
   // 现在与 parseReply 的容忍度对齐：kind 合法 + 未写编号 → 认；写了别的编号 → 不认。
   check('kind 合法但漏写编号 → true（与 parseReply 对齐，避免白等到停滞）', D.hasContractAnswer('{"kind":"final","text":"晴"}', 'req-abc') === true);
   check('没给 requestId → false（宁可多等）', D.hasContractAnswer('{"kind":"final","text":"x"}', '') === false);
+
+  // 2026-09-28 错认事件：页面上挂着**上一轮**的答复（旧 request_id + kind=tool_calls），
+  // rows 模式 2.4 秒就把它交了差（当时 rows 模式豁免了 hasContractAnswer）。修复后：
+  // hasContractAnswer 必须为 false，且 staleContractAnswer 把它识别为"旧答复"（→ 继续等本轮，
+  // 不触发 best-effort 兜底 —— 否则只是换一种方式把旧答案交上去）。
+  const staleText = '{"request_id":"req-old01","kind":"tool_calls","calls":[{"name":"pwsh","arguments":{"command":"dir"}}]}';
+  check('上一轮答复：hasContractAnswer → false', D.hasContractAnswer(staleText, 'req-cur01') === false);
+  check('上一轮答复：staleContractAnswer → true（识别为旧答复，继续等本轮）', D.staleContractAnswer(staleText, 'req-cur01') === true);
+  check('本轮答复（编号相同）不是 stale', D.staleContractAnswer('{"request_id":"req-cur01","kind":"final","text":"2"}', 'req-cur01') === false);
+  check('漏写本轮编号的合法答复不是 stale', D.staleContractAnswer('{"kind":"final","text":"x"}', 'req-cur01') === false);
 }
 
 console.log('\n=== 4g) N1：clock.js 的开关必须有人写（否则渲染时钟补丁是死代码）===');
@@ -329,6 +339,17 @@ console.log('\n=== 4i) content.js 的 best-effort 兜底（畸形 JSON 不再空
   const beIdx = src.indexOf('bestEffort: true');
   const rmIdx = src.lastIndexOf('sessionStorage.removeItem(sentKey)', beIdx);
   check('兜底路径也先清 sentKey（绝不重复提交）', rmIdx > 0 && rmIdx < beIdx);
+}
+
+console.log('\n=== 4j) 旧答复绝不能被认领（2026-09-28 错认事件：rows 模式 2.4 秒交了上一轮的答案） ===');
+{
+  const src = readFileSync(join(ROOT, 'extension', 'content.js'), 'utf8');
+  // 修复一：rows 模式不再豁免 hasContractAnswer（不再"含 kind 就放行"）
+  check('认账门对所有来源统一用 hasContractAnswer（不再按 source 豁免）',
+    /contractOk = D\.hasContractAnswer\(snap\.text, job\.requestId\)/.test(src) && !/snap\.source !== 'page-tail' \|\| D\.hasContractAnswer/.test(src));
+  // 修复二：页面上是别的轮次时，报阶段（看门狗不会误杀）+ 复位兜底计时 + continue 等本轮
+  check('旧答复时上报"等待本轮"的阶段（进度不断流）', /页面上还是上一轮的答复/.test(src) && /report\('progress', \{ phase: stalePhase \}\)/.test(src));
+  check('旧答复分支不触发 best-effort（bestEffortSince 复位后再 continue）', /bestEffortSince = 0;[^\n]*\n\s*continue;/.test(src));
 }
 
 console.log('\n' + (fail === 0 ? `全部通过 ✓  (${pass} 项)` : `失败 ${fail} 项 ✗ (通过 ${pass})`));

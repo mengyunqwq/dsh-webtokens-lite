@@ -344,6 +344,48 @@
   }
 
   /**
+   * 页面上挂的是不是**别的轮次**的契约对象（能解析、kind 合法、却带着别的 request_id）？
+   * 为什么需要（2026-09-28 真机第二次踩坑）： submitting 第二轮任务时，页面上还挂着**上一轮的答复**
+   * （带上一轮的 request_id + "kind"）。rows 模式的 looksLikeAnswer 只看"含本轮编号**或**含 kind"，
+   * 旧答复靠 "kind" 混过来，扩展 2.4 秒就把旧答案交了差 → 客户端报「编号不匹配」，白耗一轮。
+   * 这个判据用来识别"这是旧答复，本轮的还没渲染出来" → 继续等，并且**不要**触发 best-effort 兜底
+   * （兜底会把旧答案交上去，等于换一种方式犯错）。
+   */
+  function staleContractAnswer(text, requestId) {
+    const s = String(text || '');
+    const rid = String(requestId || '');
+    if (!s || !rid) return false;
+    let depth = 0, start = -1, inStr = false, esc = false;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (inStr) {
+        if (esc) { esc = false; continue; }
+        if (ch === '\\') { esc = true; continue; }
+        if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === '{') { if (depth === 0) start = i; depth++; continue; }
+      if (ch === '}') {
+        if (depth > 0) {
+          depth--;
+          if (depth === 0 && start >= 0) {
+            const candidate = s.slice(start, i + 1);
+            start = -1;
+            try {
+              const o = JSON.parse(candidate);
+              if (o && typeof o === 'object' && !Array.isArray(o)
+                && ['final', 'tool_calls'].includes(String(o.kind || ''))
+                && o.request_id && String(o.request_id) !== rid) return true;
+            } catch { /* 不是完整 JSON，继续往后找 */ }
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
    * 看起来是不是"本轮的答复"？
    * 判据：正文里出现本轮 request_id，或出现我们契约里的字段名 "kind"。
    *
@@ -429,6 +471,6 @@
   globalThis.DSHOwnDom = {
     SELECTORS, isVisible, findComposer, findStop, findSend, composerText, setComposerText, rows, textOf, reasoningOf,
     captureBaseline, scan, completeJson, acceptDelay, stableEnough, pollDelay, phaseOf, diagnose, isSignInPage,
-    looksLikeAnswer, hasContractAnswer,
+    looksLikeAnswer, hasContractAnswer, staleContractAnswer,
   };
 })();

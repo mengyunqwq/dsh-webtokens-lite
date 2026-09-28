@@ -13,7 +13,7 @@
   const D = globalThis.DSHOwnDom;
   // 版本号单一来源是 manifest.json（content script 同样能 getManifest），不再手抄。
   // 兜底值：万一读取失败也能报出版本，便于排查看的是哪一版加载的。
-  let VERSION = '1.1.5';
+  let VERSION = '1.1.6';
   try { VERSION = chrome.runtime.getManifest().version; } catch { /* 兜底值 */ }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let active = null;
@@ -122,6 +122,16 @@
         if (!confirmed && Date.now() - sentAt > 12000) throw new Error('网页未确认收到这条消息，为避免重复提交已停止；请检查专用标签页');
 
         const phase = D.phaseOf({ text: snap.text, reasoning, generating: snap.generating, sent: confirmed });
+        // 页面挂着**别的轮次**的答复（能解析、kind 合法、却带着别的 request_id）→ 那是上一轮的
+        // 旧答复，本轮的还没渲染出来。绝不能认领（更不能走 best-effort 兜底把旧答案交上去 ——
+        // 那只是换一种方式犯错）。做法：继续在本轮里等，但要**持续上报阶段**，否则外部的停滞
+        // 看门狗会以为"90 秒没有进展"把它掐掉（错认事件见 2026-09-28：rows 模式 2.4 秒交了上一轮的答案）。
+        if (confirmed && snap.answerSeen && D.staleContractAnswer(snap.text, job.requestId)) {
+          const stalePhase = '页面上还是上一轮的答复（request_id 不是本轮的），继续等待本轮答复渲染';
+          if (stalePhase !== lastPhase) { lastPhase = stalePhase; report('progress', { phase: stalePhase }); }
+          bestEffortSince = 0;   // 旧答复不许触发兜底（见上）
+          continue;
+        }
         // 停止生成却读不到文本时，把"我到底看到了什么"一起报出来：否则外部只能看到"卡住了"，
         // 无法区分是选择器没命中、页面没渲染完、还是文本在别的容器里（实测就这样白等了 120 秒）。
         const diag = (confirmed && !snap.generating && !snap.text)
@@ -153,10 +163,16 @@
         // 回传，客户端解析不到 JSON → 报「网页答复里没有可解析的 JSON 对象」并重试一次
         // （用户看到的就是那条报错）。宁可多等一会儿，也不要回传半截内容。
         const looksLike = D.looksLikeAnswer(snap.text, job.requestId);
-        // N3：page-tail 兜底路径还要更严——必须真的出现**本轮契约对象**（可解析、request_id 为本轮、
-        // kind 合法），而不是"文本里出现过本轮编号"。因为用户刚提交的提示词最后一行就写着
-        // `request_id 必须是 "req-xxx"`，只按编号认账会把提示词本身当成答复回传（进而触发重试）。
-        const contractOk = snap.source !== 'page-tail' || D.hasContractAnswer(snap.text, job.requestId);
+        // 认账门对**所有来源**统一收紧（2026-09-28 真机第二次踩坑的终点）：
+        //   原来只在 page-tail 模式才要求 hasContractAnswer，rows 模式只看 looksLikeAnswer ——
+        //   而它"文本含本轮编号 **或** 含 '\"kind\"'" 就放行。真机踩到：页面上还挂着**上一轮的答复**
+        //   （带上一轮的 request_id + "kind"），rows 模式 2.4 秒就把旧答复抓来回传 →
+        //   客户端报「request_id 不匹配」，不仅没答上，还白耗一轮。
+        //   正确语义：**带别的轮次编号 → 不是本轮答复，继续等**（本轮的答复几秒内就会渲染出来）。
+        //   hasContractAnswer 的三条判据（能解析、kind 合法、编号未写或等于本轮）在 rows 模式同样成立：
+        //   rows 抓到的就是答复行全文，契约对象就在其中；若畸形到解析不了 → 门不过 →
+        //   走下面的 best-effort 兜底把原文照样回报（客户端还有容错修复与校验）。
+        const contractOk = D.hasContractAnswer(snap.text, job.requestId);
         if (confirmed && snap.answerSeen && looksLike && contractOk && snap.changed && D.stableEnough({ text: snap.text, stableMs: Date.now() - stableSince, hasStop: snap.generating })) {
           const text = snap.text;
           if (!text.trim()) throw new Error('网页停止生成但没有可读的答复内容');
