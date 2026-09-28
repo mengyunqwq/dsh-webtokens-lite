@@ -147,6 +147,15 @@ console.log('\n=== 8) 模型把 JSON 塞进 text 却不转义 → 解析侧容�
   check('并说明修的是"非法的反斜杠转义"', pathOk.warnings.some((w) => /非法的反斜杠转义/.test(w)));
   const pathArgs = typeof pathOk.calls[0].arguments === 'string' ? JSON.parse(pathOk.calls[0].arguments) : pathOk.calls[0].arguments;
   check('路径还原正确（单反斜杠，没有多补成两个）', String(pathArgs.command).includes('梦云Agent') && !String(pathArgs.command).includes('\\\\梦'), String(pathArgs.command).slice(0, 56));
+
+  // 真机 2026-09-28 第二次报障（req-ff9b0bf5，原文 289 字符）：同一个答复里**两个缺陷并存** ——
+  // command 值里有未转义的双引号（"E:\梦云Agent\src"），且 \梦 是非法转义。
+  const cmdRaw = '{"request_id":"req-fix01","kind":"tool_calls","calls":[{"name":"pwsh","arguments":{"command":"cmd /c dir /b /s "E:\\梦云Agent\\src"","description":"List src files with cmd dir"}}]}';
+  const cmdOk = parseReply(cmdRaw, { id: 'req-fix01' });
+  check('command 里未转义的双引号 → 容错后可解析出工具调用', cmdOk.kind === 'tool_calls' && cmdOk.calls.length === 1, cmdOk.calls[0]?.name);
+  check('并说明修了"未转义的双引号"', cmdOk.warnings.some((w) => /未转义的双引号/.test(w)), cmdOk.warnings.join('|').slice(0, 46));
+  const cmdArgs = typeof cmdOk.calls[0].arguments === 'string' ? JSON.parse(cmdOk.calls[0].arguments) : cmdOk.calls[0].arguments;
+  check('命令还原正确（内层引号与路径都保留）', /cmd \/c dir \/b \/s "E:\\梦云Agent\\src"/.test(String(cmdArgs.command)), String(cmdArgs.command).slice(0, 56));
 }
 
 console.log('\n' + (fail === 0 ? `全部通过 ✓  (${pass} 项)` : `失败 ${fail} 项 ✗ (通过 ${pass})`));
