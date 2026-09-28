@@ -131,12 +131,22 @@ console.log('\n=== 8) 模型把 JSON 塞进 text 却不转义 → 解析侧容�
   const broken = '{"request_id":"req-fix01","kind":"final","text":"[{"name":"苹果"},{"name":"香蕉"}]"}';
   const fixed = parseReply(broken, { id: 'req-fix01' });
   check('修复后能解析并给出 text', fixed.kind === 'final' && fixed.text.includes('苹果'), fixed.text.slice(0, 30));
-  check('留下"曾修复"的警告（不静默吞掉）', fixed.warnings.some((w) => /未转义引号/.test(w)));
+  check('留下"曾修复"的警告（不静默吞掉）', fixed.warnings.some((w) => /容错修复/.test(w) && /未转义的引号/.test(w)), fixed.warnings.join(' | ').slice(0, 60));
   check('围栏代码块里的同种写法也能修', parseReply('```json\n' + broken + '\n```', { id: 'req-fix01' }).text.includes('香蕉'));
   const wrongId = throwsWith(() => parseReply(broken.replace('req-fix01', 'req-old'), { id: 'req-fix01' }), 'WEB_REPLY_JSON');
   check('修完编号不是本轮 → 仍然报错（绝不当成答案）', !!wrongId, String(wrongId?.code));
   check('没有 text 字段的半截 JSON → 仍然报 WEB_REPLY_JSON', !!throwsWith(() => parseReply('{"request_id":"req-fix01","kind":"final"', { id: 'req-fix01' }), 'WEB_REPLY_JSON'));
   check('正常 JSON 不受影响（不触发修复、无警告）', parseReply('{"request_id":"req-fix01","kind":"final","text":"普通答复"}', { id: 'req-fix01' }).warnings.length === 0);
+
+  // 真机 2026-09-28（"让他检查梦云 agent 做得怎么样"那次）：模型写 Windows 路径用**单反斜杠**，
+  // `\梦` 不是合法 JSON 转义 → JSON.parse 直接失败，用户只看到"网页答复里没有可解析的 JSON 对象…"。
+  // 原文（480 字符）从扩展存储里捞出来复现过，这里用同种写法的精简版做回归。
+  const pathRaw = '{"request_id":"req-fix01","kind":"tool_calls","calls":[{"name":"pwsh","arguments":{"command":"Get-ChildItem -Force \'E:\\梦云Agent\' | Out-String"}}]}';
+  const pathOk = parseReply(pathRaw, { id: 'req-fix01' });
+  check('非法反斜杠转义（\'E:\\梦云Agent\'）→ 容错后能解析出工具调用', pathOk.kind === 'tool_calls' && pathOk.calls.length === 1, pathOk.calls[0]?.name);
+  check('并说明修的是"非法的反斜杠转义"', pathOk.warnings.some((w) => /非法的反斜杠转义/.test(w)));
+  const pathArgs = typeof pathOk.calls[0].arguments === 'string' ? JSON.parse(pathOk.calls[0].arguments) : pathOk.calls[0].arguments;
+  check('路径还原正确（单反斜杠，没有多补成两个）', String(pathArgs.command).includes('梦云Agent') && !String(pathArgs.command).includes('\\\\梦'), String(pathArgs.command).slice(0, 56));
 }
 
 console.log('\n' + (fail === 0 ? `全部通过 ✓  (${pass} 项)` : `失败 ${fail} 项 ✗ (通过 ${pass})`));
