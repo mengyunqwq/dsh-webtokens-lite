@@ -13,7 +13,7 @@
   const D = globalThis.DSHOwnDom;
   // 版本号单一来源是 manifest.json（content script 同样能 getManifest），不再手抄。
   // 兜底值：万一读取失败也能报出版本，便于排查看的是哪一版加载的。
-  let VERSION = '1.1.4';
+  let VERSION = '1.1.5';
   try { VERSION = chrome.runtime.getManifest().version; } catch { /* 兜底值 */ }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let active = null;
@@ -105,6 +105,9 @@
       let stableSince = 0;
       let reasoning = '';
       let stoppedEmptySince = 0;   // 停止生成却读不到文本的起始时刻（用于快速失败）
+      // best-effort 期限：确认答完、文本稳定，但"认账门"迟迟不过时的起始时刻。
+      // 见下面 BEST_EFFORT_MS 的说明（2026-09-28 真机：畸形 JSON 让门永远不通过 → 90 秒空转）。
+      let bestEffortSince = 0;
       while (!job.cancelled && Date.now() - started < 590000) {
         await sleep(D.pollDelay(!!D.findStop(document)));
         if (job.cancelled) break;
@@ -162,6 +165,26 @@
           report('result', { text, reasoning, metrics: { chars: text.length, ms: Date.now() - started, rows: snap.rowCount, source: snap.source } });
           return;
         }
+        // best-effort 兜底（2026-09-28 真机）：模型写的 JSON 可能畸形到**连形态都判不出来**
+        // （未转义的内层引号、Windows 路径里的非法转义 —— 客户端 lib/protocol.js 有容错修复）。
+        // 而扩展这道门同样要 JSON.parse，于是它永远不通过 → 内容脚本一直不回报 → 客户端只能干等，
+        // 最终报 90 秒 WEB_STALL（用户完全拿不到原因）。真机就是这样：
+        // "网页已生成完毕，正在回传"之后一直没动静。
+        // 处置：确认答完 + 文本稳定 + 确实有文本，超过 BEST_EFFORT_MS 仍过不了门 → **照样回报原文**
+        // （带 bestEffort 标记）。安全性：客户端那边有容错修复 + 编号/kind 校验 + 契约示例过滤
+        // （示例用的是占位编号 req-示例编号），最坏也只是把"空转 90 秒"换成"一条说得清的解析报错"，
+        // 不会把提示词本身当成答案交给调用方。
+        const BEST_EFFORT_MS = 20_000;
+        if (confirmed && snap.answerSeen && snap.changed && !snap.generating && snap.text.trim()) {
+          if (!bestEffortSince) bestEffortSince = Date.now();
+          else if (Date.now() - bestEffortSince > BEST_EFFORT_MS) {
+            const text = snap.text;
+            sessionStorage.removeItem(sentKey);
+            banner('Harness 专用会话 · 答复已回传（容错兜底）');
+            report('result', { text, reasoning, metrics: { chars: text.length, ms: Date.now() - started, rows: snap.rowCount, source: snap.source, bestEffort: true } });
+            return;
+          }
+        } else bestEffortSince = 0;
         banner('Harness 专用会话 · ' + phase);
       }
       if (job.cancelled) { sessionStorage.removeItem(sentKey); return; }

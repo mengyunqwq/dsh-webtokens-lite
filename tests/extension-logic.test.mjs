@@ -314,5 +314,22 @@ console.log('\n=== 6) 扩展清单自检 ===');
   }
 }
 
+console.log('\n=== 4i) content.js 的 best-effort 兜底（畸形 JSON 不再空转 90 秒） ===');
+{
+  // 2026-09-28 真机：模型写畸形 JSON（未转义内层引号 / Windows 路径非法转义）时，扩展那道"形态门"
+  // 同样要 JSON.parse，于是**永远不通过** → 内容脚本一直不回报 → 客户端干等 90 秒报 WEB_STALL，
+  // 用户完全拿不到原因。修法：确认答完且文本稳定但仍过不了门时，超期把原文照样回报（带 bestEffort）。
+  const src = readFileSync(join(ROOT, 'extension', 'content.js'), 'utf8');
+  check('定义了 BEST_EFFORT_MS 期限', /const BEST_EFFORT_MS\s*=/.test(src));
+  check('回报时带 bestEffort 标记', /bestEffort:\s*true/.test(src));
+  check('兜底分支排在正常接受判定之后（正常路径优先）',
+    src.indexOf("rows: snap.rowCount, source: snap.source } })") < src.indexOf('bestEffort: true'));
+  check('兜底前提：已确认收到 + 看到本轮答复 + 有变化 + 已停止生成 + 有文本',
+    /confirmed && snap\.answerSeen && snap\.changed && !snap\.generating && snap\.text\.trim\(\)/.test(src));
+  const beIdx = src.indexOf('bestEffort: true');
+  const rmIdx = src.lastIndexOf('sessionStorage.removeItem(sentKey)', beIdx);
+  check('兜底路径也先清 sentKey（绝不重复提交）', rmIdx > 0 && rmIdx < beIdx);
+}
+
 console.log('\n' + (fail === 0 ? `全部通过 ✓  (${pass} 项)` : `失败 ${fail} 项 ✗ (通过 ${pass})`));
 process.exit(fail === 0 ? 0 : 1);
