@@ -63,6 +63,8 @@ console.log('\n=== 3) 解析 final ===');
 
 console.log('\n=== 3b) N3：页面文本里的其它 JSON 不能被当成答复 ===');
 {
+  // 真机/实验场景：page-tail 兜底时，页面文本里会有提示词自带的**工具定义 JSON**。
+  // 修复前 `usable.find(o => !o.request_id)` 会先命中它，于是拿工具定义当"答复"去解析。
   const toolDefs = '【工具定义】[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]';
   const err = throwsWith(() => parseReply(toolDefs, { id: 'req-a' }), 'WEB_REPLY_KIND');
   check('只有工具定义 JSON → 不会当成合法答复（报 kind 错）', !!err);
@@ -106,8 +108,7 @@ console.log('\n=== 5) 转 OpenAI 响应 ===');
   check('content 为 null 而不是空串', tc.choices[0].message.content === null);
 }
 
-console.log('\n=== 6) 必需参数缺失 → 判可重试（绝不猜参数值）===');
-{
+console.log('\n=== 6) 必需参数缺失 → 判可重试（绝不猜参数值）===');{
   const schemas = new Map([['get_weather', { type: 'object', properties: { city: { type: 'string' } }, required: ['city'], additionalProperties: false }]]);
   check('缺必需参数 → WEB_TOOL_MISSING_ARGS', !!throwsWith(() => parseReply('{"kind":"tool_calls","calls":[{"name":"get_weather","arguments":{}}]}', { id: 'r', schemas }), 'WEB_TOOL_MISSING_ARGS'));
   check('必需参数齐了 → 正常通过', parseReply('{"kind":"tool_calls","calls":[{"name":"get_weather","arguments":{"city":"北京"}}]}', { id: 'r', schemas }).calls.length === 1);
@@ -122,6 +123,20 @@ console.log('\n=== 7) 重试时能带上提醒（nudge）===');
   check('不传 nudge 时提示词里没有该段', !plain.prompt.includes('上一轮的问题'));
   check('传了 nudge 会写进提示词', nudged.prompt.includes('上一轮的问题') && nudged.prompt.includes('required 全部填上'));
   check('提醒排在输出契约之后（更靠近生成位置）', nudged.prompt.indexOf('上一轮的问题') > nudged.prompt.indexOf('本机桥接输出格式硬性要求'));
+}
+
+console.log('\n=== 8) 模型把 JSON 塞进 text 却不转义 → 解析侧容错修复 ===');
+{
+  // 真机原文（同一模型连续两次都这么写）：text 是一段 JSON 数组，里面的引号没有转义
+  const broken = '{"request_id":"req-fix01","kind":"final","text":"[{"name":"苹果"},{"name":"香蕉"}]"}';
+  const fixed = parseReply(broken, { id: 'req-fix01' });
+  check('修复后能解析并给出 text', fixed.kind === 'final' && fixed.text.includes('苹果'), fixed.text.slice(0, 30));
+  check('留下"曾修复"的警告（不静默吞掉）', fixed.warnings.some((w) => /未转义引号/.test(w)));
+  check('围栏代码块里的同种写法也能修', parseReply('```json\n' + broken + '\n```', { id: 'req-fix01' }).text.includes('香蕉'));
+  const wrongId = throwsWith(() => parseReply(broken.replace('req-fix01', 'req-old'), { id: 'req-fix01' }), 'WEB_REPLY_JSON');
+  check('修完编号不是本轮 → 仍然报错（绝不当成答案）', !!wrongId, String(wrongId?.code));
+  check('没有 text 字段的半截 JSON → 仍然报 WEB_REPLY_JSON', !!throwsWith(() => parseReply('{"request_id":"req-fix01","kind":"final"', { id: 'req-fix01' }), 'WEB_REPLY_JSON'));
+  check('正常 JSON 不受影响（不触发修复、无警告）', parseReply('{"request_id":"req-fix01","kind":"final","text":"普通答复"}', { id: 'req-fix01' }).warnings.length === 0);
 }
 
 console.log('\n' + (fail === 0 ? `全部通过 ✓  (${pass} 项)` : `失败 ${fail} 项 ✗ (通过 ${pass})`));
