@@ -19,7 +19,7 @@ console.log('=== 1) 提示词组装 ===');
   check('request_id 用了指定的值', t.id === 'req-test01');
   check('含系统指令', t.prompt.includes('你是简洁助手'));
   check('含输出契约', t.prompt.includes(FORMAT_GUARD.slice(0, 24)));
-  check('契约里带上了本轮 REQUEST_ID', t.prompt.includes('"request_id":"req-test01"') && !t.prompt.includes('<本轮 REQUEST_ID>'));
+  check('契约示例用占位编号，真编号只在最后一行说明', t.prompt.includes('req-示例编号') && t.prompt.includes('req-test01') && !t.prompt.includes('<本轮 REQUEST_ID>'), '（这样"读页面尾部整段文本"时示例不会被误当答案）');
   check('含用户消息', t.prompt.includes('[user] 北京天气？'));
   check('含上一轮工具调用', t.prompt.includes('get_weather({"city":"北京"})'));
   check('含工具结果', t.prompt.includes('[工具结果 c1] 晴 25℃'));
@@ -92,6 +92,24 @@ console.log('\n=== 5) 转 OpenAI 响应 ===');
   const tc = toOpenAICompletion({ kind: 'tool_calls', text: '', calls: [{ id: 'c1', name: 'f', arguments: '{"a":1}' }] }, { model: 'm', id: 'r2' });
   check('tool_calls 形状', tc.choices[0].finish_reason === 'tool_calls' && tc.choices[0].message.tool_calls[0].function.name === 'f');
   check('content 为 null 而不是空串', tc.choices[0].message.content === null);
+}
+
+console.log('\n=== 6) 必需参数缺失 → 判可重试（绝不猜参数值）===');
+{
+  const schemas = new Map([['get_weather', { type: 'object', properties: { city: { type: 'string' } }, required: ['city'], additionalProperties: false }]]);
+  check('缺必需参数 → WEB_TOOL_MISSING_ARGS', !!throwsWith(() => parseReply('{"kind":"tool_calls","calls":[{"name":"get_weather","arguments":{}}]}', { id: 'r', schemas }), 'WEB_TOOL_MISSING_ARGS'));
+  check('必需参数齐了 → 正常通过', parseReply('{"kind":"tool_calls","calls":[{"name":"get_weather","arguments":{"city":"北京"}}]}', { id: 'r', schemas }).calls.length === 1);
+  check('没有 required 声明时不误判', parseReply('{"kind":"tool_calls","calls":[{"name":"f","arguments":{}}]}', { id: 'r', schemas: new Map([['f', { type: 'object', properties: {} }]]) }).calls.length === 1);
+  check('错误文案点明缺哪个参数', /city/.test(String(throwsWith(() => parseReply('{"kind":"tool_calls","calls":[{"name":"get_weather","arguments":{}}]}', { id: 'r', schemas }), 'WEB_TOOL_MISSING_ARGS')?.message)));
+}
+
+console.log('\n=== 7) 重试时能带上提醒（nudge）===');
+{
+  const plain = buildTask({ messages: [{ role: 'user', content: 'x' }] });
+  const nudged = buildTask({ messages: [{ role: 'user', content: 'x' }], nudge: '上一轮缺少必需参数，这次请把 required 全部填上。' });
+  check('不传 nudge 时提示词里没有该段', !plain.prompt.includes('上一轮的问题'));
+  check('传了 nudge 会写进提示词', nudged.prompt.includes('上一轮的问题') && nudged.prompt.includes('required 全部填上'));
+  check('提醒排在输出契约之后（更靠近生成位置）', nudged.prompt.indexOf('上一轮的问题') > nudged.prompt.indexOf('本机桥接输出格式硬性要求'));
 }
 
 console.log('\n' + (fail === 0 ? `全部通过 ✓  (${pass} 项)` : `失败 ${fail} 项 ✗ (通过 ${pass})`));

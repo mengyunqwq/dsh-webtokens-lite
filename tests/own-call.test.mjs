@@ -23,8 +23,8 @@ async function fakeExtension(reply, { polls = 1 } = {}) {
     const res = await fetch(`http://127.0.0.1:${PORT}/ext/poll`, { method: 'POST', headers: H, body: JSON.stringify({ clientId: 'fake-ext', version: '1.0.0', state: '测试' }) });
     const body = await res.json();
     if (!body.task) { seen.push({ empty: true }); continue; }
-    const { id, lease, prompt } = body.task;
-    const out = typeof reply === 'function' ? reply(prompt, i) : reply;
+    const { id, lease, prompt, requestId } = body.task;
+    const out = typeof reply === 'function' ? reply(prompt, i, requestId) : reply;
     if (out?.phase) await fetch(`http://127.0.0.1:${PORT}/ext/progress`, { method: 'POST', headers: H, body: JSON.stringify({ taskId: id, lease, phase: out.phase }) });
     await fetch(`http://127.0.0.1:${PORT}/ext/result`, { method: 'POST', headers: H, body: JSON.stringify({ taskId: id, lease, ok: out?.ok !== false, text: out?.text ?? '', error: out?.error ?? '', metrics: { chars: String(out?.text ?? '').length } }) });
     seen.push({ prompt, id });
@@ -34,8 +34,11 @@ async function fakeExtension(reply, { polls = 1 } = {}) {
 
 console.log('=== 1) 文本答复：组装 → 派发 → 回传 → 解析 ===');
 {
-  const ext = fakeExtension((prompt) => {
-    const id = /"request_id":"([^"]+)"/.exec(prompt)?.[1] ?? '?';
+  const ext = fakeExtension((prompt, i, requestId) => {
+    // 真扩展是**直接用 broker 下发的 requestId**（不解析提示词）——夹具也必须这样：
+    // 提示词里那段输出契约示例用的是占位编号（req-示例编号），从提示词里抠编号会抠到占位值，
+    // 于是答复被当成"只有示例"而判失败（实测踩到）。
+    const id = requestId;
     return { phase: '网页正在生成回复', text: '```json\n' + JSON.stringify({ request_id: id, kind: 'final', text: '北京的天气是晴' }) + '\n```' };
   }, { polls: 1 });
   const progress = [];
@@ -54,8 +57,8 @@ console.log('=== 1) 文本答复：组装 → 派发 → 回传 → 解析 ===')
 
 console.log('\n=== 2) 工具调用 + 参数剥字段 ===');
 {
-  const ext = fakeExtension((prompt) => {
-    const id = /"request_id":"([^"]+)"/.exec(prompt)?.[1] ?? '?';
+  const ext = fakeExtension((prompt, i, requestId) => {
+    const id = requestId;
     return { text: JSON.stringify({ request_id: id, kind: 'tool_calls', calls: [{ name: 'get_weather', arguments: { city: '北京', extra: '多写的字段' } }] }) };
   }, { polls: 1 });
   const out = await callBridgeOwn({
@@ -79,8 +82,8 @@ console.log('\n=== 3) 第一次答成散文（本机解析失败，可重试）�
   // 注意：这里**故意**不用"网页侧失败"来测重试——网页侧失败（如页面重载）是不能重试的，
   // 重发会让用户账号里出现两条一样的提问。可以安全重试的是"答复解析失败"。
   const ids = [];
-  const ext = fakeExtension((prompt, i) => {
-    const id = /"request_id":"([^"]+)"/.exec(prompt)?.[1] ?? '?';
+  const ext = fakeExtension((prompt, i, requestId) => {
+    const id = requestId;
     ids.push(id);
     return i === 0
       ? { text: '这轮我直接说人话了，没有 JSON。' }
