@@ -194,6 +194,10 @@ console.log('\n=== 4f) N3：page-tail 必须出现"本轮契约对象"，提示�
   check('真答复（tool_calls）→ true', D.hasContractAnswer(answeredCalls, 'req-abc') === true);
   check('编号对但 kind 非法 → false（留给客户端报 kind 错）', D.hasContractAnswer('{"request_id":"req-abc","kind":"answer"}', 'req-abc') === false);
   check('只有别的轮次编号 → false', D.hasContractAnswer('{"request_id":"req-xyz","kind":"final","text":"x"}', 'req-abc') === false);
+  // 2026-09-28 真机踩到：模型漏写 request_id 时，旧判据（必须等于本轮编号）会把一条**合法答复**
+  // 判成"不是本轮答复"，扩展于是在页面上一直等、直到 90 秒 WEB_STALL 被掐断。
+  // 现在与 parseReply 的容忍度对齐：kind 合法 + 未写编号 → 认；写了别的编号 → 不认。
+  check('kind 合法但漏写编号 → true（与 parseReply 对齐，避免白等到停滞）', D.hasContractAnswer('{"kind":"final","text":"晴"}', 'req-abc') === true);
   check('没给 requestId → false（宁可多等）', D.hasContractAnswer('{"kind":"final","text":"x"}', '') === false);
 }
 

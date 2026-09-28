@@ -300,7 +300,7 @@
   }
 
   /**
-   * 文本里是否存在**本轮的契约对象**：一个能解析的 JSON 对象，request_id 等于本轮编号，且 kind 合法。
+   * 文本里是否存在**本轮的契约对象**：一个能解析的 JSON 对象，kind 合法，且 request_id **未写或等于本轮编号**。
    * 为什么需要（N3）：page-tail 兜底路径里"本轮编号"也会出现在**用户刚提交的提示词**最后一行
    * （`request_id 必须是 "req-xxx"`）——只按"文本含编号"认账会把提示词本身当成答复回传。
    * 要求"能解析成契约对象"才能把它排除掉：提示词里那个编号在普通文本里，不在 JSON 对象里。
@@ -328,9 +328,13 @@
             start = -1;
             try {
               const o = JSON.parse(candidate);
+              // 与客户端 parseReply 的判据对齐（2026-09-28 修 90s WEB_STALL）：
+              //   kind 必须合法；request_id **允许漏写**（parseReply 同样容忍"无编号但形态合法"），
+              //   但只要写了就**必须等于本轮** —— 这样提示词里那段契约示例（占位编号 req-示例编号）
+              //   依旧会被挡在门外，不会把提示词本身当成答复。
               if (o && typeof o === 'object' && !Array.isArray(o)
-                && String(o.request_id || '') === rid
-                && ['final', 'tool_calls'].includes(String(o.kind || ''))) return true;
+                && ['final', 'tool_calls'].includes(String(o.kind || ''))
+                && (!o.request_id || String(o.request_id) === rid)) return true;
             } catch { /* 不是完整 JSON，继续往后找 */ }
           }
         }
