@@ -350,6 +350,9 @@ console.log('\n=== 4j) 旧答复绝不能被认领（2026-09-28 错认事件：r
   // 修复二：页面上是别的轮次时，报阶段（看门狗不会误杀）+ 复位兜底计时 + continue 等本轮
   check('旧答复时上报"等待本轮"的阶段（进度不断流）', /页面上还是上一轮的答复/.test(src) && /report\('progress', \{ phase: stalePhase \}\)/.test(src));
   check('旧答复分支不触发 best-effort（bestEffortSince 复位后再 continue）', /bestEffortSince = 0;[^\n]*\n\s*continue;/.test(src));
+  // ⚠️ 2026-09-28 自测踩到：这一条必须有，否则"页面上有别的轮次的历史答复 + 本轮答复畸形"
+  // 会被永久挡在等待分支里（连兜底都不触发）→ 90 秒停滞，比不修还糟。
+  check('旧答复分支必须额外要求"本轮的契约对象还没出现"', /!hasOwn && D\.staleContractAnswer\(snap\.text, job\.requestId\)/.test(src));
 }
 
 console.log('\n' + (fail === 0 ? `全部通过 ✓  (${pass} 项)` : `失败 ${fail} 项 ✗ (通过 ${pass})`));

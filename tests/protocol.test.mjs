@@ -26,6 +26,10 @@ console.log('=== 1) 提示词组装 ===');
   check('含工具定义', t.prompt.includes('"name": "get_weather"'));
   check('工具 schema 已放宽（无 additionalProperties:false）', !t.prompt.includes('additionalProperties'));
   check('尾声要求只输出 JSON', t.prompt.includes('只输出那个 JSON 对象'));
+  // 2026-09-28 真机：模型写 Windows 路径用单反斜杠（\梦 非法转义）、把 JSON 塞进 text 不转义、
+  // 一次写 5~6 个工具调用导致括号不配对/片段重复 —— 契约里必须把这三条写死。
+  check('契约写明转义规则（引号 / 反斜杠 / 换行）', /反斜杠写成/.test(FORMAT_GUARD) && /引号写成/.test(FORMAT_GUARD));
+  check('契约要求一次只给一个工具调用（多调用极易写出非法 JSON）', /一次回复只给一个工具调用/.test(FORMAT_GUARD));
 }
 {
   const t = buildTask({ messages: [{ role: 'user', content: [{ type: 'text', text: '看图' }, { type: 'image_url', image_url: { url: 'x' } }] }] });

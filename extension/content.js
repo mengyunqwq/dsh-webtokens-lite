@@ -13,7 +13,7 @@
   const D = globalThis.DSHOwnDom;
   // 版本号单一来源是 manifest.json（content script 同样能 getManifest），不再手抄。
   // 兜底值：万一读取失败也能报出版本，便于排查看的是哪一版加载的。
-  let VERSION = '1.1.6';
+  let VERSION = '1.1.7';
   try { VERSION = chrome.runtime.getManifest().version; } catch { /* 兜底值 */ }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let active = null;
@@ -122,11 +122,17 @@
         if (!confirmed && Date.now() - sentAt > 12000) throw new Error('网页未确认收到这条消息，为避免重复提交已停止；请检查专用标签页');
 
         const phase = D.phaseOf({ text: snap.text, reasoning, generating: snap.generating, sent: confirmed });
-        // 页面挂着**别的轮次**的答复（能解析、kind 合法、却带着别的 request_id）→ 那是上一轮的
-        // 旧答复，本轮的还没渲染出来。绝不能认领（更不能走 best-effort 兜底把旧答案交上去 ——
-        // 那只是换一种方式犯错）。做法：继续在本轮里等，但要**持续上报阶段**，否则外部的停滞
-        // 看门狗会以为"90 秒没有进展"把它掐掉（错认事件见 2026-09-28：rows 模式 2.4 秒交了上一轮的答案）。
-        if (confirmed && snap.answerSeen && D.staleContractAnswer(snap.text, job.requestId)) {
+        // 页面挂着**别的轮次**的答复、而且**本轮的契约对象还没出现** → 那是上一轮的旧答复，
+        // 本轮的还没渲染出来。绝不能认领（更不能走 best-effort 兜底把旧答案交上去）。
+        // 做法：继续在本轮里等，但要**持续上报阶段**，否则外部停滞看门狗会以为"90 秒没有进展"掐掉它。
+        // （错认事件见 2026-09-28：rows 模式 2.4 秒交了上一轮的答案。）
+        //
+        // ⚠️ 条件里的 `!D.hasContractAnswer(...)` 是必须的（当天自测踩到）：页面上通常堆着好几轮
+        //   历史答复（都是合法契约对象），若只看 staleContractAnswer，就会把**本轮已经到达、
+        //   只是 JSON 畸形**的答复也一起挡掉，连 best-effort 兜底都不触发 → 90 秒停滞（比不修还糟）。
+        //   只有"本轮确实还没出现"时才进这个等待分支；本轮一旦出现（哪怕畸形）就走正常/兜底路径。
+        const hasOwn = D.hasContractAnswer(snap.text, job.requestId);
+        if (confirmed && snap.answerSeen && !hasOwn && D.staleContractAnswer(snap.text, job.requestId)) {
           const stalePhase = '页面上还是上一轮的答复（request_id 不是本轮的），继续等待本轮答复渲染';
           if (stalePhase !== lastPhase) { lastPhase = stalePhase; report('progress', { phase: stalePhase }); }
           bestEffortSince = 0;   // 旧答复不许触发兜底（见上）
