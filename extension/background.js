@@ -15,7 +15,7 @@
 const DEFAULTS = { base: 'http://127.0.0.1:3081' };
 // 版本号单一来源是 manifest.json：SW 里直接 getManifest 读取，不再手抄。
 // （这里留一个兜底值，万一 getManifest 意外不可用也能报出版本。）
-let VERSION = '1.1.13';
+let VERSION = '1.1.14';
 try { VERSION = chrome.runtime.getManifest().version; } catch { /* 兜底值 */ }
 let pumping = false;
 
@@ -231,7 +231,17 @@ async function pump() {
       //    会话卫生改到**空闲时**做：见下面 sessionHygiene()。
       // 先记"已派发"，再让它提交：任何中途重载都不会导致重复提问
       await chrome.storage.local.set({ active: { ...job, tabId: tab.id, dispatched: true, startedAt: Date.now() } });
-      const health = await ensureContentScript(tab.id);
+      let health = await ensureContentScript(tab.id);
+      // 自愈：内容脚本**只在页面加载时注入** —— 扩展更新后，已经打开的页面仍跑着旧版脚本 ✗。
+      // 真机证据（2026-09-29）：重载扩展到 1.1.11/1.1.13 之后，18:12、18:13 的交付**仍然**走
+      // 20 秒 best-effort 兜底（ms≈24s）—— 因为快速通道（1.1.9 引入）在内容脚本里，而那个页面
+      // 里的脚本停在 1.1.9 之前。这里比对版本：不一致就**刷新页面一次**（此刻尚未提交提示词，
+      // 刷新无害，也不会导致重复提问），然后重新拿健康状态。
+      if (health?.ready && health.version && health.version !== VERSION) {
+        try { await chrome.tabs.reload(tab.id); } catch { /* ignore */ }
+        await waitForComplete(tab.id);
+        health = await ensureContentScript(tab.id);
+      }
       // 输入框要等页面渲染完才出现（尤其扩展刚重载、自愈又把页面重载了一次的时候）。
       // 早先只查一次就判死 —— 实测报成"未登录"，其实只是页面还在加载。
       const ready = health?.ready ? health : await waitForReady(tab.id);

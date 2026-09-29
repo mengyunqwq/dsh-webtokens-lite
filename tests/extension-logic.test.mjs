@@ -378,6 +378,12 @@ console.log('\n=== 4k) 会话卫生必须在"空闲期"做（派发路径里导�
   check('派发路径里不再导航（否则会撞上 SPA 地址跳转）',
     !/const tab = await ensureTab\(\);[\s\S]{0,900}?chrome\.tabs\.update\(tab\.id, \{ url:/.test(src));
   check('空闲分支里调用了会话卫生', /await sessionHygiene\(\);/.test(src));
+  // 2026-09-29 真机：扩展更新后**已打开的页面**里的内容脚本仍是旧版（只在页面加载时注入），
+  // 于是"快速通道"（1.1.9 引入）没生效 —— 18:12/18:13 的交付还在走 20 秒兜底（ms≈24s）。
+  // 修法：SW 派发前比对内容脚本上报的版本，不一致就刷新页面一次（此时还没提交提示词，刷新无害）。
+  check('派发前比对内容脚本版本，不一致就刷新页面（自愈）',
+    /health\.version !== VERSION/.test(src) && /await chrome\.tabs\.reload\(tab\.id\)/.test(src));
+  check('刷新后重新取健康状态（不拿旧值继续）', /health = await ensureContentScript\(tab\.id\)/.test(src));
 }
 
 console.log('\n' + (fail === 0 ? `全部通过 ✓  (${pass} 项)` : `失败 ${fail} 项 ✗ (通过 ${pass})`));
