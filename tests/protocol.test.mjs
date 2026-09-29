@@ -118,6 +118,13 @@ console.log('\n=== 6) 必需参数缺失 → 判可重试（绝不猜参数值�
   check('必需参数齐了 → 正常通过', parseReply('{"kind":"tool_calls","calls":[{"name":"get_weather","arguments":{"city":"北京"}}]}', { id: 'r', schemas }).calls.length === 1);
   check('没有 required 声明时不误判', parseReply('{"kind":"tool_calls","calls":[{"name":"f","arguments":{}}]}', { id: 'r', schemas: new Map([['f', { type: 'object', properties: {} }]]) }).calls.length === 1);
   check('错误文案点明缺哪个参数', /city/.test(String(throwsWith(() => parseReply('{"kind":"tool_calls","calls":[{"name":"get_weather","arguments":{}}]}', { id: 'r', schemas }), 'WEB_TOOL_MISSING_ARGS')?.message)));
+  // 2026-09-29 真机确认的"回传回来却调不动工具"真凶：只提供 pwsh/read 时，网页模型自创了
+  // list_directory 并调用它 → 以前放行 → 调用方报"没有这个工具"，用户看到"有回传但用不了"。
+  // 现在直接判**不可重试**的明确错误，并把本轮真实可用的工具名列出来。
+  const unknown = throwsWith(() => parseReply('{"kind":"tool_calls","calls":[{"name":"list_directory","arguments":{"path":"E:\\\\x"}}]}', { id: 'r', schemas }), 'WEB_TOOL_UNKNOWN');
+  check('自创工具名 → WEB_TOOL_UNKNOWN（不再放行给调用方）', !!unknown);
+  check('错误里列出本轮真实可用的工具名', /get_weather/.test(String(unknown?.message)), String(unknown?.message).slice(0, 80));
+  check('调用方没给 schemas 时不误判（无法校验就不拦）', parseReply('{"kind":"tool_calls","calls":[{"name":"whatever","arguments":{}}]}', { id: 'r' }).calls.length === 1);
 }
 
 console.log('\n=== 7) 重试时能带上提醒（nudge）===');
