@@ -13,7 +13,7 @@
   const D = globalThis.DSHOwnDom;
   // 版本号单一来源是 manifest.json（content script 同样能 getManifest），不再手抄。
   // 兜底值：万一读取失败也能报出版本，便于排查看的是哪一版加载的。
-  let VERSION = '1.1.11';
+  let VERSION = '1.1.12';
   try { VERSION = chrome.runtime.getManifest().version; } catch { /* 兜底值 */ }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let active = null;

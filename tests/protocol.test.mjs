@@ -175,6 +175,15 @@ console.log('\n=== 8) 模型把 JSON 塞进 text 却不转义 → 解析侧容�
   const fixedCmd = parseReply(brokenCmd, { id: 'req-d60355eb' });
   check('值内引号后跟" }"（夹空格）也能修回来', fixedCmd.kind === 'tool_calls' && fixedCmd.calls.length === 1, fixedCmd.calls[0]?.name);
   check('修复说明点出"后跟空白+结构符"这个变体', fixedCmd.warnings.some((w) => /后跟空白\+结构符/.test(w)), fixedCmd.warnings.join('|').slice(0, 60));
+
+  // 真机 2026-09-29（req-03705ca7）：模型把**正则** `'^\.env'` 原样写进 JSON —— `\.` 不是合法 JSON 转义。
+  // 我原来的逐字符替换会在"原本就有 `\\.`"的地方产出 `\\\.`（前两个配对、第三个又和 `.` 组非法转义）✗，
+  // 修完仍 parse 失败。现在按整段反斜杠处理：奇数段补一个，偶数段不动，且幂等。
+  const reRaw = '{"request_id":"req-re01","kind":"tool_calls","calls":[{"name":"pwsh","arguments":{"command":"git ls-files | Select-String -Pattern \'^\\.env|^config\\\\.json\'","workdir":"E:\\\\x"}}]}';
+  const reOk = parseReply(reRaw, { id: 'req-re01' });
+  check('正则转义 `\\.`（非法）+ 已有 `\\\\.` 混在一起也能修回来', reOk.kind === 'tool_calls' && reOk.calls.length === 1, reOk.calls[0]?.name);
+  const reArgs = typeof reOk.calls[0].arguments === 'string' ? JSON.parse(reOk.calls[0].arguments) : reOk.calls[0].arguments;
+  check('修出来的正则仍是单个反斜杠（语义没被写坏）', String(reArgs.command).includes("'^\\.env") && String(reArgs.command).includes('^config\\.json'), String(reArgs.command).slice(0, 60));
 }
 
 console.log('\n=== 9) 报错自带身份（哪一个实现、哪一版、哪个任务）===');
