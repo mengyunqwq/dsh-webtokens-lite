@@ -15,7 +15,7 @@
 const DEFAULTS = { base: 'http://127.0.0.1:3081' };
 // 版本号单一来源是 manifest.json：SW 里直接 getManifest 读取，不再手抄。
 // （这里留一个兜底值，万一 getManifest 意外不可用也能报出版本。）
-let VERSION = '1.1.10';
+let VERSION = '1.1.11';
 try { VERSION = chrome.runtime.getManifest().version; } catch { /* 兜底值 */ }
 let pumping = false;
 
@@ -58,8 +58,27 @@ async function setState(state, patch = {}) {
   } catch { /* ignore */ }
 }
 
-/** 找到（或打开）一个 DeepSeek 标签页 */
-async function ensureTab() {
+// 空闲期「会话卫生」：只在**没有任务在跑**时把标签页收回根 URL（= 新对话），节流到每分钟一次。
+// 目的：清掉网页会话里"模型自己写坏的旧答复"，避免它照抄自己的坏输出
+// （真机三连故障：三次答复里的乱码逐字节相同，而三次的提示词里都没有它）。
+// ⚠️ 有任务在跑时**绝不动页面**：派发路径里导航会撞上 DeepSeek SPA 的地址跳转
+//    （根 URL 提交第一条消息时会跳到 /a/chat/s/<id>），把任务打成 WEB_PAGE_GONE ✗。
+let lastHygieneAt = 0;
+async function sessionHygiene() {
+  if (Date.now() - lastHygieneAt < 60_000) return;
+  lastHygieneAt = Date.now();
+  try {
+    const { bridgeTabId } = await chrome.storage.local.get('bridgeTabId');
+    if (!bridgeTabId) return;
+    const tab = await chrome.tabs.get(bridgeTabId);
+    const url = String(tab?.url || '');
+    // 只把"某个会话页"收回根 URL；已经在根 URL、或停在登录页时都不动它
+    if (!/^https:\/\/chat\.deepseek\.com\/a\/chat\/s\//.test(url)) return;
+    await chrome.tabs.update(bridgeTabId, { url: 'https://chat.deepseek.com/' });
+  } catch { /* ignore */ }
+}
+
+/** 找到（或打开）一个 DeepSeek 标签页 */async function ensureTab() {
   const tabs = await chrome.tabs.query({ url: 'https://chat.deepseek.com/*' });
   // 按"上次选定 → 逐个问健康 → 跳过登录页"来挑一个**真正可用**的标签页。
   // 为什么不能只取第一个：同一域名下可能有多个标签页，其中一个停在登录页或已被丢弃。
@@ -205,22 +224,11 @@ async function pump() {
         phase: '扩展已收到任务，正在准备标签页',
       }).catch(() => { /* 确认失败不影响正事：真正的接手进度还会再报一次 */ });
       const tab = await ensureTab();
-      // 每个任务都从**全新会话**开始（2026-09-29 真机三连故障定位出的根因）：
-      //   网页模型会把上一次的回复留在页面会话里；一旦某轮写坏（括号不配对、`\梦` 非法转义、
-      //   标点被替换成 −/′ 等），这条坏文本就留在它的上下文里，后面的轮次会**逐字节地照抄**。
-      //   真机证据：三次独立的故障，答复里出现同一段乱码（d=′E:…′;Get−ChildItemd=…）逐字节相同
-      //   —— 独立生成三次不可能，只有"从上下文里复制"能解释；而三次任务的**提示词**里都没有它。
-      //   修复：本协议的上下文全部来自提示词（API 会话），网页侧历史纯属负担 ——
-      //   提交前把标签页导航回根 URL（= 新对话），坏历史就从模型上下文里清掉了。
-      //   （这也顺带消灭"页面上还挂着别轮答复、rows 认错对象"那一整类坑。）
-      {
-        const urlBefore = String(tab.url || '');
-        const fresh = /^https:\/\/chat\.deepseek\.com\/?(?:[?#].*)?$/.test(urlBefore);
-        if (!fresh) {
-          await chrome.tabs.update(tab.id, { url: 'https://chat.deepseek.com/' });
-          await waitForComplete(tab.id);
-        }
-      }
+      // ⚠️ 不在派发路径里导航（2026-09-29 真机回归，当场抓到）：1.1.8 曾在这里把标签页导航回根 URL，
+      //    而 DeepSeek 的 SPA 在"从根 URL 提交第一条消息"时会把地址跳到 /a/chat/s/<id> —— 这一跳
+      //    会把内容脚本上下文干掉，任务随即被判成 WEB_PAGE_GONE「专用标签页已关闭或跳转」✗
+      //    （网页上却看得到答复，用户侧表现就是"有回传但我收不到"）。
+      //    会话卫生改到**空闲时**做：见下面 sessionHygiene()。
       // 先记"已派发"，再让它提交：任何中途重载都不会导致重复提问
       await chrome.storage.local.set({ active: { ...job, tabId: tab.id, dispatched: true, startedAt: Date.now() } });
       const health = await ensureContentScript(tab.id);
@@ -262,7 +270,14 @@ async function pump() {
         }
       }
       await setState(health.generating ? 'DeepSeek 正在生成答复' : '等待网页答复');
+      return;
     }
+
+    // 空闲期"会话卫生"（2026-09-29）：上一个任务把页面留在了某个会话里，而网页模型会**照抄
+    // 自己上一轮的坏输出**（真机三连故障：三次答复里的乱码逐字节相同，提示词里却没有它）。
+    // 本协议的上下文全部来自提示词，网页侧历史纯属负担 —— 空闲时把页面收回根 URL（= 新对话）。
+    // 为什么放在空闲期而不是派发前：派发前导航会撞上 SPA 的地址跳转（见上面派发路径里的注释）。
+    await sessionHygiene();
   } catch (error) {
     // 本机 broker 没起来 / 网络抖动：只更新状态，不打扰用户
     await setState('等待本机桥接：' + (error?.message || error));

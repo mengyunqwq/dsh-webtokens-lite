@@ -365,16 +365,19 @@ console.log('\n=== 4j) 旧答复绝不能被认领（2026-09-28 错认事件：r
   check('旧答复分支必须额外要求"本轮的契约对象还没出现"', /!hasOwn && D\.staleContractAnswer\(snap\.text, job\.requestId\)/.test(src));
 }
 
-console.log('\n=== 4k) 每个任务都从全新会话开始（防止网页模型照抄自己的坏输出）===');
+console.log('\n=== 4k) 会话卫生必须在"空闲期"做（派发路径里导航会打死任务）===');
 {
-  // 2026-09-29 三连故障定位的根因：模型写坏一次，坏文本留在 DeepSeek 页面会话里，
-  // 后面的轮次逐字节照抄（三次故障的乱码逐字节相同，而三次的提示词里都没有它）。
-  // 上下文本来就全在提示词里 → 提交前把标签页导航回根 URL（= 新对话）。
+  // 2026-09-29 真机回归：1.1.8 把"导航回根 URL"放在**派发路径**里，而 DeepSeek SPA 在根 URL
+  // 提交第一条消息时会把地址跳到 /a/chat/s/<id> —— 这一跳干掉内容脚本，任务被判成
+  // WEB_PAGE_GONE「专用标签页已关闭或跳转」，而网页上其实看得到答复（用户侧＝"有回传但收不到"）。
+  // 现在：只在空闲时做（sessionHygiene），并且有任务在跑时绝不额外导航。
   const src = readFileSync(join(ROOT, 'extension', 'background.js'), 'utf8');
-  check('提交前会导航回根 URL（= 全新会话）',
-    /chrome\.tabs\.update\(tab\.id, \{ url: 'https:\/\/chat\.deepseek\.com\/' \}\)/.test(src));
-  check('已经是根 URL 时不重复导航（避免无谓刷新）', /const fresh = \^https/.test(src) || /const fresh = /.test(src));
-  check('导航后等待页面加载完成', /await waitForComplete\(tab\.id\)/.test(src));
+  check('存在空闲期会话卫生函数（把会话页收回根 URL）',
+    /async function sessionHygiene\(\)/.test(src) && /chrome\.tabs\.update\(bridgeTabId, \{ url: 'https:\/\/chat\.deepseek\.com\/' \}\)/.test(src));
+  check('会话卫生有节流（不会每次轮询都导航）', /lastHygieneAt/.test(src) && /60_000/.test(src));
+  check('派发路径里不再导航（否则会撞上 SPA 地址跳转）',
+    !/const tab = await ensureTab\(\);[\s\S]{0,900}?chrome\.tabs\.update\(tab\.id, \{ url:/.test(src));
+  check('空闲分支里调用了会话卫生', /await sessionHygiene\(\);/.test(src));
 }
 
 console.log('\n' + (fail === 0 ? `全部通过 ✓  (${pass} 项)` : `失败 ${fail} 项 ✗ (通过 ${pass})`));
