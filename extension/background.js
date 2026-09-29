@@ -15,7 +15,7 @@
 const DEFAULTS = { base: 'http://127.0.0.1:3081' };
 // 版本号单一来源是 manifest.json：SW 里直接 getManifest 读取，不再手抄。
 // （这里留一个兜底值，万一 getManifest 意外不可用也能报出版本。）
-let VERSION = '1.1.12';
+let VERSION = '1.1.13';
 try { VERSION = chrome.runtime.getManifest().version; } catch { /* 兜底值 */ }
 let pumping = false;
 
@@ -321,6 +321,10 @@ async function forward(message) {
         taskId: active.id, lease: active.lease, ok: true,
         text: message.text,
         metrics: { ...(message.metrics || {}), reasoning: (message.reasoning || '').length },
+        // 2026-09-29：以前这里**只发思考的长度**，正文被丢掉 → 调用方永远看不到网页模型的思考 ✗。
+        // 现在把正文一起带上（截断 4000 字，避免超长思考把结果体撑爆）；broker 会把它作为
+        // reasoning_content 交给调用方（只读不编造：网页没给思考就是空串）。
+        reasoningText: String(message.reasoning || '').slice(0, 4000),
         firstAt: Date.now(),
       },
     });

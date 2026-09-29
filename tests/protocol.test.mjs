@@ -110,6 +110,14 @@ console.log('\n=== 5) 转 OpenAI 响应 ===');
   const tc = toOpenAICompletion({ kind: 'tool_calls', text: '', calls: [{ id: 'c1', name: 'f', arguments: '{"a":1}' }] }, { model: 'm', id: 'r2' });
   check('tool_calls 形状', tc.choices[0].finish_reason === 'tool_calls' && tc.choices[0].message.tool_calls[0].function.name === 'f');
   check('content 为 null 而不是空串', tc.choices[0].message.content === null);
+  // 2026-09-29（用户问"为什么看不到思考"）：网页模型的思考以前**只记长度、正文被丢**✗。
+  // 现在作为 reasoning_content 一并返回（标准 OpenAI 兼容字段）；网页没给思考就不带这个字段。
+  const withThink = toOpenAICompletion({ kind: 'final', text: '答案' }, { model: 'm', id: 'r3', reasoning: '我先想一下……' });
+  check('给了 reasoning → 返回 reasoning_content', withThink.choices[0].message.reasoning_content === '我先想一下……', String(withThink.choices[0].message.reasoning_content).slice(0, 20));
+  const noThink = toOpenAICompletion({ kind: 'final', text: '答案' }, { model: 'm', id: 'r4' });
+  check('没给 reasoning → 不带该字段（不编造）', !('reasoning_content' in noThink.choices[0].message));
+  const thinkCalls = toOpenAICompletion({ kind: 'tool_calls', text: '', calls: [{ id: 'c1', name: 'f', arguments: '{}' }] }, { model: 'm', id: 'r5', reasoning: '思考' });
+  check('tool_calls 分支也带 reasoning_content', thinkCalls.choices[0].message.reasoning_content === '思考');
 }
 
 console.log('\n=== 6) 必需参数缺失 → 判可重试（绝不猜参数值）===');{
