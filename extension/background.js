@@ -15,7 +15,7 @@
 const DEFAULTS = { base: 'http://127.0.0.1:3081' };
 // 版本号单一来源是 manifest.json：SW 里直接 getManifest 读取，不再手抄。
 // （这里留一个兜底值，万一 getManifest 意外不可用也能报出版本。）
-let VERSION = '1.1.7';
+let VERSION = '1.1.8';
 try { VERSION = chrome.runtime.getManifest().version; } catch { /* 兜底值 */ }
 let pumping = false;
 
@@ -205,6 +205,22 @@ async function pump() {
         phase: '扩展已收到任务，正在准备标签页',
       }).catch(() => { /* 确认失败不影响正事：真正的接手进度还会再报一次 */ });
       const tab = await ensureTab();
+      // 每个任务都从**全新会话**开始（2026-09-29 真机三连故障定位出的根因）：
+      //   网页模型会把上一次的回复留在页面会话里；一旦某轮写坏（括号不配对、`\梦` 非法转义、
+      //   标点被替换成 −/′ 等），这条坏文本就留在它的上下文里，后面的轮次会**逐字节地照抄**。
+      //   真机证据：三次独立的故障，答复里出现同一段乱码（d=′E:…′;Get−ChildItemd=…）逐字节相同
+      //   —— 独立生成三次不可能，只有"从上下文里复制"能解释；而三次任务的**提示词**里都没有它。
+      //   修复：本协议的上下文全部来自提示词（API 会话），网页侧历史纯属负担 ——
+      //   提交前把标签页导航回根 URL（= 新对话），坏历史就从模型上下文里清掉了。
+      //   （这也顺带消灭"页面上还挂着别轮答复、rows 认错对象"那一整类坑。）
+      {
+        const urlBefore = String(tab.url || '');
+        const fresh = /^https:\/\/chat\.deepseek\.com\/?(?:[?#].*)?$/.test(urlBefore);
+        if (!fresh) {
+          await chrome.tabs.update(tab.id, { url: 'https://chat.deepseek.com/' });
+          await waitForComplete(tab.id);
+        }
+      }
       // 先记"已派发"，再让它提交：任何中途重载都不会导致重复提问
       await chrome.storage.local.set({ active: { ...job, tabId: tab.id, dispatched: true, startedAt: Date.now() } });
       const health = await ensureContentScript(tab.id);
