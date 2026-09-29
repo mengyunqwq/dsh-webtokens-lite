@@ -309,6 +309,14 @@
     const s = String(text || '');
     const rid = String(requestId || '');
     if (!s || !rid) return false;
+    // 快速通道（2026-09-29 真机统计后加）：只要文本里出现**本轮编号的 JSON 键形态**
+    // （"request_id":"req-xxx"）且带合法 kind 字段，就认账回传 —— 哪怕 JSON 因转义错误
+    // 解析不了（真机：command 值里混了未转义引号/反引号，"差一点就合法"的回复占多数）。
+    // 原来必须解析成功才能过门，导致这类回复全部走 20 秒 best-effort 兜底交付 ✗。
+    // 安全性：提示词自带的契约示例用的是**占位编号**（req-示例编号），不会与本轮编号的
+    // JSON 键形态匹配；真正的解析、校验、修复都还在客户端（lib/protocol.js）完成。
+    const keyForm = '"request_id":"' + rid + '"';
+    if (s.includes(keyForm) && /"kind"\s*:\s*"(final|tool_calls)"/.test(s)) return true;
     let depth = 0, start = -1, inStr = false, esc = false;
     for (let i = 0; i < s.length; i++) {
       const ch = s[i];

@@ -160,6 +160,14 @@ console.log('\n=== 8) 模型把 JSON 塞进 text 却不转义 → 解析侧容�
   check('并说明修了"未转义的双引号"', cmdOk.warnings.some((w) => /未转义的双引号/.test(w)), cmdOk.warnings.join('|').slice(0, 46));
   const cmdArgs = typeof cmdOk.calls[0].arguments === 'string' ? JSON.parse(cmdOk.calls[0].arguments) : cmdOk.calls[0].arguments;
   check('命令还原正确（内层引号与路径都保留）', /cmd \/c dir \/b \/s "E:\\梦云Agent\\src"/.test(String(cmdArgs.command)), String(cmdArgs.command).slice(0, 56));
+
+  // 真机 2026-09-29（req-d60355eb，546 字符原文）：坏在 "command" 值内部 —— 坏引号后面跟着 " }"（夹了空格），
+  // 且命令里混了 −/′ 异体标点与缺失片段。原结构式修复"跳过空白再判"会把它误判成字符串正常结束 ✗ → 修不回来；
+  // 现在"跳空白 / 不跳空白"两个变体都试，这条被救回来了。
+  const brokenCmd = '{"request_id":"req-d60355eb","kind":"tool_calls","calls":[{"name":"pwsh","arguments":{"command":"Get-ChildItem -Recurse -File -Path src,bin | ForEach-Object { rel = .FullName.Substring(1); lines = (Get-Content lines`t$rel" } | Sort-Object","description":"List project source files with line counts","workdir":"E:\\梦云Agent"}}]}';
+  const fixedCmd = parseReply(brokenCmd, { id: 'req-d60355eb' });
+  check('值内引号后跟" }"（夹空格）也能修回来', fixedCmd.kind === 'tool_calls' && fixedCmd.calls.length === 1, fixedCmd.calls[0]?.name);
+  check('修复说明点出"后跟空白+结构符"这个变体', fixedCmd.warnings.some((w) => /后跟空白\+结构符/.test(w)), fixedCmd.warnings.join('|').slice(0, 60));
 }
 
 console.log('\n=== 9) 报错自带身份（哪一个实现、哪一版、哪个任务）===');

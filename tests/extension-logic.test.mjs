@@ -200,6 +200,16 @@ console.log('\n=== 4f) N3：page-tail 必须出现"本轮契约对象"，提示�
   check('kind 合法但漏写编号 → true（与 parseReply 对齐，避免白等到停滞）', D.hasContractAnswer('{"kind":"final","text":"晴"}', 'req-abc') === true);
   check('没给 requestId → false（宁可多等）', D.hasContractAnswer('{"kind":"final","text":"x"}', '') === false);
 
+  // 2026-09-29（真机统计后加）：复盘发现"正常回复经常因为 command 里未转义引号差一点合法"
+  // 过不了门 → 全靠 20 秒兜底交付。加快速通道：本轮编号的 JSON 键形态 + kind 合法 → 立即认账。
+  // 安全性：提示词示例用的是占位编号（req-示例编号），不会与本轮编号的 JSON 键形态匹配。
+  check('快速通道：本轮编号键形态 + kind 合法 → true（即便 JSON 转义损坏）',
+    D.hasContractAnswer('{"request_id":"req-abc","kind":"tool_calls","calls":[{"name":"pwsh","arguments":{"command":"Get-ChildItem \'E:\\梦云Agent\' | Format-Table"}}]}', 'req-abc') === true);
+  check('快速通道不误伤：别的轮次编号键形态 → false',
+    D.hasContractAnswer('{"request_id":"req-old01","kind":"final","text":"x"}', 'req-abc') === false);
+  check('快速通道不误伤：占位编号示例 → false',
+    D.hasContractAnswer('{"request_id":"req-示例编号","kind":"final","text":"给用户的最终回答"}', 'req-abc') === false);
+
   // 2026-09-28 错认事件：页面上挂着**上一轮**的答复（旧 request_id + kind=tool_calls），
   // rows 模式 2.4 秒就把它交了差（当时 rows 模式豁免了 hasContractAnswer）。修复后：
   // hasContractAnswer 必须为 false，且 staleContractAnswer 把它识别为"旧答复"（→ 继续等本轮，
