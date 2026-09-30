@@ -233,7 +233,13 @@ console.log('\n=== 6c) 还原被 JSON 转义吃掉的路径分隔符（\\b 这�
   // 反例：制表符/换行**不动**（多行命令里可能是真实需要的，改了反而错）
   const tabs = parseReply('{"request_id":"req-bs02","kind":"tool_calls","calls":[{"name":"pwsh","arguments":{"command":"line1\\nline2\\tend"}}]}', { id: 'req-bs02' });
   const targs = JSON.parse(tabs.calls[0].arguments);
-  check('换行与制表符保持不变（不擅自改写命令）', targs.command === 'line1\nline2\tend', JSON.stringify(targs.command));
+  check('command 里的换行与制表符保持不变（不擅自改写命令）', targs.command === 'line1\nline2\tend', JSON.stringify(targs.command));
+  // 但**路径类参数**里的控制字符必定是坏掉的路径分隔符（Windows 文件名不允许 0x00-0x1F）：
+  // `\tools`、`\node_modules`、`\reports` 全会踩到，必须还原。
+  const p2 = parseReply('{"request_id":"req-bs03","kind":"tool_calls","calls":[{"name":"read","arguments":{"file_path":"E:\\梦云Agent\\src\\tools\\node_modules\\reports\\a.js"}}]}', { id: 'req-bs03' });
+  const a2 = JSON.parse(p2.calls[0].arguments);
+  check('路径参数里的 \\t / \\n / \\r 也还原（\\tools / \\node_modules / \\reports）',
+    a2.file_path === 'E:\\梦云Agent\\src\\tools\\node_modules\\reports\\a.js' && !/[\b\f\r\t\n]/.test(a2.file_path), JSON.stringify(a2.file_path));
 }
 
 console.log('\n' + (fail === 0 ? `全部通过 ✓  (${pass} 项)` : `失败 ${fail} 项 ✗ (通过 ${pass})`));
