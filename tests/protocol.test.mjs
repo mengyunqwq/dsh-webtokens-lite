@@ -218,5 +218,23 @@ console.log('\n=== 9) 报错自带身份（哪一个实现、哪一版、哪个�
   check('报错带本次 request_id（可与扩展存储对账）', String(e?.message).includes('request_id=req-idtest'));
 }
 
+console.log('\n=== 6c) 还原被 JSON 转义吃掉的路径分隔符（\\b 这类合法转义会把 Windows 路径写坏）===');
+{
+  // 真机 2026-09-30：agent 反复读 `E:\梦云Agent\src\providersase.js` → not found → 重试死循环。
+  // 根因：模型写单反斜杠，`providers\base.js` 里的 `\b` 是**合法 JSON 转义**（退格 U+0008），
+  // 解析出来是「providers + 退格 + ase.js」，终端里退格吃掉 b → 看起来就是 providersase.js。
+  const rawPath = '{"request_id":"req-bs01","kind":"tool_calls","calls":[{"name":"read","arguments":{"file_path":"E:\\梦云Agent\\src\\providers\\base.js"}}]}';
+  const ok = parseReply(rawPath, { id: 'req-bs01' });
+  const args = JSON.parse(ok.calls[0].arguments);
+  check('parseReply 成功（\\b 是合法转义，不会让解析失败）', ok.kind === 'tool_calls');
+  check('路径里的 \\b 已还原成反斜杠+b（不再是退格符）',
+    args.file_path.includes('providers\\base.js') && !/[\b]/.test(args.file_path), JSON.stringify(args.file_path));
+  check('并给出"已还原路径分隔符"的说明', ok.warnings.some((w) => /还原.*路径分隔符/.test(w)), ok.warnings.join('|').slice(0, 60));
+  // 反例：制表符/换行**不动**（多行命令里可能是真实需要的，改了反而错）
+  const tabs = parseReply('{"request_id":"req-bs02","kind":"tool_calls","calls":[{"name":"pwsh","arguments":{"command":"line1\\nline2\\tend"}}]}', { id: 'req-bs02' });
+  const targs = JSON.parse(tabs.calls[0].arguments);
+  check('换行与制表符保持不变（不擅自改写命令）', targs.command === 'line1\nline2\tend', JSON.stringify(targs.command));
+}
+
 console.log('\n' + (fail === 0 ? `全部通过 ✓  (${pass} 项)` : `失败 ${fail} 项 ✗ (通过 ${pass})`));
 process.exit(fail === 0 ? 0 : 1);
