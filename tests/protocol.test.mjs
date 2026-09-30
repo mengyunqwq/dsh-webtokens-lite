@@ -135,6 +135,21 @@ console.log('\n=== 6) 必需参数缺失 → 判可重试（绝不猜参数值�
   check('调用方没给 schemas 时不误判（无法校验就不拦）', parseReply('{"kind":"tool_calls","calls":[{"name":"whatever","arguments":{}}]}', { id: 'r' }).calls.length === 1);
 }
 
+console.log('\n=== 6b) 截断识别：JSON 中途被切断 → WEB_REPLY_TRUNCATED（不再误报"没有可解析的 JSON"）===');
+{
+  // 真机 2026-09-29（req-aafa6f0b）：2625 字符的 final 长报告在 JSON 中途被切断
+  // （Unterminated string at position 2625），而我们报的是"没有可解析的 JSON 对象" ✗ —— 归因错误、
+  // 误导排查。判据：以 `{` 开头 + 引号或花括号不配对。
+  const truncated = '{"request_id":"req-tr01","kind":"final","text":"# 审查报告\n\n审查文件：config.json、.env、src/config.js、src/provider.js 以及';
+  const e = throwsWith(() => parseReply(truncated, { id: 'req-tr01' }), 'WEB_REPLY_TRUNCATED');
+  check('引号未闭合 → WEB_REPLY_TRUNCATED', !!e, String(e?.code));
+  check('错误文案点明"截断"与字数、并给出可操作建议', /截断/.test(String(e?.message)) && /分段/.test(String(e?.message)), String(e?.message).slice(0, 60));
+  const prose = throwsWith(() => parseReply('抱歉，我不能这样做。', { id: 'req-tr02' }), 'WEB_REPLY_JSON');
+  check('散文回答仍报 WEB_REPLY_JSON（不误判成截断）', !!prose, String(prose?.code));
+  const cutBraces = throwsWith(() => parseReply('{"request_id":"req-tr03","kind":"final","text":"abc"', { id: 'req-tr03' }), 'WEB_REPLY_TRUNCATED');
+  check('花括号不配对 → WEB_REPLY_TRUNCATED', !!cutBraces, String(cutBraces?.code));
+}
+
 console.log('\n=== 7) 重试时能带上提醒（nudge）===');
 {
   const plain = buildTask({ messages: [{ role: 'user', content: 'x' }] });
@@ -154,7 +169,7 @@ console.log('\n=== 8) 模型把 JSON 塞进 text 却不转义 → 解析侧容�
   check('围栏代码块里的同种写法也能修', parseReply('```json\n' + broken + '\n```', { id: 'req-fix01' }).text.includes('香蕉'));
   const wrongId = throwsWith(() => parseReply(broken.replace('req-fix01', 'req-old'), { id: 'req-fix01' }), 'WEB_REPLY_JSON');
   check('修完编号不是本轮 → 仍然报错（绝不当成答案）', !!wrongId, String(wrongId?.code));
-  check('没有 text 字段的半截 JSON → 仍然报 WEB_REPLY_JSON', !!throwsWith(() => parseReply('{"request_id":"req-fix01","kind":"final"', { id: 'req-fix01' }), 'WEB_REPLY_JSON'));
+  check('没有 text 字段的半截 JSON → 现在明确判为截断（WEB_REPLY_TRUNCATED）', !!throwsWith(() => parseReply('{"request_id":"req-fix01","kind":"final"', { id: 'req-fix01' }), 'WEB_REPLY_TRUNCATED'));
   check('正常 JSON 不受影响（不触发修复、无警告）', parseReply('{"request_id":"req-fix01","kind":"final","text":"普通答复"}', { id: 'req-fix01' }).warnings.length === 0);
 
   // 真机 2026-09-28（"让他检查梦云 agent 做得怎么样"那次）：模型写 Windows 路径用**单反斜杠**，
