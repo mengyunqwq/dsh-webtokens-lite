@@ -13,7 +13,7 @@
   const D = globalThis.DSHOwnDom;
   // 版本号单一来源是 manifest.json（content script 同样能 getManifest），不再手抄。
   // 兜底值：万一读取失败也能报出版本，便于排查看的是哪一版加载的。
-  let VERSION = '1.1.14';
+  let VERSION = '1.1.15';
   try { VERSION = chrome.runtime.getManifest().version; } catch { /* 兜底值 */ }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let active = null;
@@ -196,7 +196,16 @@
         // （带 bestEffort 标记）。安全性：客户端那边有容错修复 + 编号/kind 校验 + 契约示例过滤
         // （示例用的是占位编号 req-示例编号），最坏也只是把"空转 90 秒"换成"一条说得清的解析报错"，
         // 不会把提示词本身当成答案交给调用方。
-        const BEST_EFFORT_MS = 20_000;
+        //
+        // 2026-09-29 缩短 20_000 → 4_000（用户问"为什么每次都在兜底"引出）：
+        //   进来这个分支的前提已经是 `!snap.generating`（页面上的停止按钮消失 = 模型答完了）✓，
+        //   所以再等 20 秒纯属白等 ✗（实测每次交付 ms=22.5~38.2s，精确卡在这 20 秒上）。
+        //   4 秒是为了压住两个下限、绝不吃掉正常路径：
+        //     · 正常认账的自适应延迟最大 acceptDelay = 2_500ms（见 dom.js）；
+        //     · 页面重排/最后一帧渲染的抖动。
+        //   因此正常答复仍然走正常门（≤2.5s 就通过 ✓），只有"门确实过不了"的畸形答复才会走到这里，
+        //   而它现在只多等 4 秒就把原文交给客户端去容错修复 ✓（原来要白等 20 秒）。
+        const BEST_EFFORT_MS = 4_000;
         if (confirmed && snap.answerSeen && snap.changed && !snap.generating && snap.text.trim()) {
           if (!bestEffortSince) bestEffortSince = Date.now();
           else if (Date.now() - bestEffortSince > BEST_EFFORT_MS) {

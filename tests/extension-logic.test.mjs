@@ -341,6 +341,12 @@ console.log('\n=== 4i) content.js 的 best-effort 兜底（畸形 JSON 不再空
   // 用户完全拿不到原因。修法：确认答完且文本稳定但仍过不了门时，超期把原文照样回报（带 bestEffort）。
   const src = readFileSync(join(ROOT, 'extension', 'content.js'), 'utf8');
   check('定义了 BEST_EFFORT_MS 期限', /const BEST_EFFORT_MS\s*=/.test(src));
+  // 2026-09-29（用户问"回传为什么这么慢"）：进来这个分支的前提已经是 `!snap.generating`
+  // （停止按钮消失＝模型答完了）✓，再等 20 秒纯属白等 ✗（实测每次交付 ms=22.5~38.2s 精确卡在这 20 秒）。
+  // 缩短到 4 秒 —— 必须大于正常认账的自适应延迟上限 2_500ms（dom.js acceptDelay），
+  // 否则会抢在正常门之前把畸形答复交出去。
+  check('兜底等待已从 20s 缩短到 4s（仍大于正常认账延迟上限 2.5s）',
+    /const BEST_EFFORT_MS = 4_000;/.test(src) && !/BEST_EFFORT_MS = 20_000/.test(src), '（正常门 ≤2.5s 先通过；畸形答复只多等 4s 就交给客户端容错）');
   check('回报时带 bestEffort 标记', /bestEffort:\s*true/.test(src));
   check('兜底分支排在正常接受判定之后（正常路径优先）',
     src.indexOf("rows: snap.rowCount, source: snap.source } })") < src.indexOf('bestEffort: true'));
